@@ -1,5 +1,7 @@
 package com.okta;
 
+import com.okta.radius.eap.AppProtocolContext;
+import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.StreamUtils;
 
 import javax.net.ssl.KeyManagerFactory;
@@ -9,6 +11,7 @@ import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.FileInputStream;
+import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.security.KeyStore;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -179,6 +182,22 @@ public class SSLEngineSocketLessHandshake {
         MemQueuePipe clientInServerOut = new MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(16));
         clientInStream = clientInServerOut;
         serverOutStream = clientInServerOut;
+    }
+
+    private void createUdpOutputStreams() {
+         try {
+             AppProtocolContext context = EAPTTLSPacketTest.makeAppProtocolContext(256);
+             EAPStackBuilder.ByteBufferPipe server = EAPStackBuilder.makeUdpReadWritePair(2000, context);
+             EAPStackBuilder.ByteBufferPipe client = EAPStackBuilder.makeUdpReadWritePair(2000, InetAddress.getByName("127.0.0.1"),
+                     context);
+             clientOutstream = client.outputStream;
+             serverInStream = server.inputStream;
+
+             clientInStream = client.inputStream;
+             serverOutStream = server.outputStream;
+         } catch (Exception e) {
+             throw new RuntimeException(e);
+         }
     }
 
     private void performSocketLessSSL() throws Exception {

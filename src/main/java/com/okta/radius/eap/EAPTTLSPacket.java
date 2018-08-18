@@ -66,6 +66,10 @@ public class EAPTTLSPacket {
         return (flag & 1) == 1;
     }
 
+    public boolean isAFragment() {
+        return (flag & 2) == 2;
+    }
+
     public void setCode(int code) {
         this.code = code;
     }
@@ -102,7 +106,7 @@ public class EAPTTLSPacket {
                 packet.messageLength = di.readInt() & 0x00000000FFFFFFFFL;
             }
 
-            byte[] data = new byte[packet.length - MIN_DATA_LENGTH];
+            byte[] data = new byte[packet.length - MIN_DATA_LENGTH - (packet.hasMessageLength() ? 4 : 0)];
             if (data.length > 0) {
                 di.read(data);
                 os.write(data);

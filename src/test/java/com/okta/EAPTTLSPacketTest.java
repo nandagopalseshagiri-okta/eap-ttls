@@ -5,9 +5,12 @@ import com.okta.radius.eap.EAPOutputException;
 import com.okta.radius.eap.EAPPacket;
 import com.okta.radius.eap.EAPTTLSPacket;
 import com.okta.radius.eap.StreamUtils;
+import com.okta.radius.eap.TTLSByteBufferInputStream;
+import com.okta.radius.eap.TTLSByteBufferOutputStream;
 import junit.framework.TestCase;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -86,7 +89,7 @@ public class EAPTTLSPacketTest extends TestCase {
         assertTrue(Arrays.equals(dc.toByteArray(), eapPacketData));
     }
 
-    private AppProtocolContext makeAppProtocolContext(final int mtu) {
+    public static AppProtocolContext makeAppProtocolContext(final int mtu) {
         return new AppProtocolContext() {
             private byte eapId = 1;
             private byte ttlsId = 1;
@@ -153,55 +156,6 @@ public class EAPTTLSPacketTest extends TestCase {
         assertTrue(Arrays.equals(dc.toByteArray(), eapPacketData));
     }
 
-    public static class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputStream {
-        private DataOutputStream eapttlsOutStream;
-        private AppProtocolContext appProtocolContext;
-        private StreamUtils.PacketInputStream<EAPTTLSPacket> ttlsPacketInputStream;
-
-        public TTLSByteBufferOutputStream(DataOutputStream ttlsStream,
-                                          AppProtocolContext context,
-                                          StreamUtils.PacketInputStream<EAPTTLSPacket> packetInputStream) {
-            eapttlsOutStream = ttlsStream;
-            appProtocolContext = context;
-            ttlsPacketInputStream = packetInputStream;
-        }
-
-        public void write(ByteBuffer byteBuffer) {
-            int maxFragmentSize = appProtocolContext.getNetworkMTU();
-            if (maxFragmentSize <= 0) {
-                maxFragmentSize = 512;
-            }
-
-            int remainingLen = byteBuffer.limit();
-            for (int i = 0; i < byteBuffer.limit(); i += maxFragmentSize) {
-                appProtocolContext.resetFlags();
-                if (i == 0) {
-                    appProtocolContext.setLengthFlag(byteBuffer.limit());
-                } else if (remainingLen > maxFragmentSize){
-                    appProtocolContext.setFragmentFlag();
-                }
-
-                remainingLen -= transmitFragment(byteBuffer.array(), i, Math.min(remainingLen, maxFragmentSize));
-            }
-        }
-
-        private int transmitFragment(byte[] array, int offset, int length) {
-            try {
-                eapttlsOutStream.write(array, offset, length);
-                eapttlsOutStream.flush();
-                waitForAck();
-                return length;
-            } catch (IOException e) {
-                throw new EAPOutputException(e);
-            }
-        }
-
-        private void waitForAck() {
-            StreamUtils.PacketAndData<EAPTTLSPacket> pd = ttlsPacketInputStream.readPacket();
-            assertTrue(pd.data.limit() == 0);
-        }
-    }
-
     public static class RadiusPacketStream implements StreamUtils.ByteBufferInputStream {
         public ByteBuffer read() {
             return ByteBuffer.wrap(new byte[] {1, 1, 0, 10, 1, 1, 0, 6, 21, 0});
@@ -257,7 +211,122 @@ public class EAPTTLSPacketTest extends TestCase {
         assertTrue(fragmentCounts[0] == 3);
     }
 
-    private byte[] randomBytes(int len) {
+    public void testTTLSPacketStreamingNoFragmenting() {
+        final byte[] dataBytes = randomBytes(23);
+        final int mtu = 64;
+        AppProtocolContext context = makeAppProtocolContext(mtu);
+
+        final int[] fragmentCounts = new int[] {0};
+        StreamUtils.DataCollector dc = new StreamUtils.DataCollector() {
+            @Override
+            public void flush() {
+                ++fragmentCounts[0];
+                if (fragmentCounts[0] == 1) {
+                    byte[] eapPacketHeader = new byte[]{1, 1, 0, 33, 1, 1, 0, 29, 21, 0};
+                    assertTrue(Arrays.equals(Arrays.copyOfRange(this.buf, 0, eapPacketHeader.length), eapPacketHeader));
+                    assertTrue(Arrays.equals(Arrays.copyOfRange(this.buf, eapPacketHeader.length, this.count),
+                            Arrays.copyOfRange(dataBytes, 0, 23)));
+                }
+
+                this.reset();
+            }
+        };
+
+        DataOutputStream eapStream = new DataOutputStream(EAPPacket.makeWrappedOutputStream(dc, context));
+
+        DataOutputStream eapTtlsOutputStream = new DataOutputStream(EAPTTLSPacket.makeWrappedOutputStream(eapStream, context));
+
+        RadiusPacketStream radiusPacketStream = new RadiusPacketStream();
+
+        EAPPacket.EAPPacketStream eapPacketStream = new EAPPacket.EAPPacketStream(radiusPacketStream);
+        EAPTTLSPacket.EAPTTLSPacketStream eapttlsPacketStream = new EAPTTLSPacket.EAPTTLSPacketStream(eapPacketStream);
+
+        TTLSByteBufferOutputStream ttlsByteBufferOutputStream = new TTLSByteBufferOutputStream(eapTtlsOutputStream, context, eapttlsPacketStream);
+
+        ttlsByteBufferOutputStream.write(ByteBuffer.wrap(dataBytes));
+
+        assertTrue(fragmentCounts[0] == 1);
+    }
+
+
+    private static class RadiusPacketStream1 implements StreamUtils.ByteBufferInputStream {
+        private int count = 0;
+        private byte[] dataBytes = randomBytes(23);
+        @Override
+        public ByteBuffer read() {
+            try {
+                ++count;
+                if (count == 1) {
+                    byte[] eapPacketHeader = new byte[]{1, 1, 0, 25, 1, 1, 0, 21, 21, 3, 0, 0, 0, 23};
+                    byte[] frag = Arrays.copyOfRange(dataBytes, 0, 11);
+                    StreamUtils.DataCollector bos = new StreamUtils.DataCollector();
+                    bos.write(eapPacketHeader);
+                    bos.write(frag);
+                    return ByteBuffer.wrap(bos.getBytes(), 0, bos.getCount());
+                }
+                if (count == 2) {
+                    byte[] eapPacketHeader = new byte[]{1, 2, 0, 21, 1, 2, 0, 17, 21, 2};
+                    byte[] frag = Arrays.copyOfRange(dataBytes, 11, 22);
+                    StreamUtils.DataCollector bos = new StreamUtils.DataCollector();
+                    bos.write(eapPacketHeader);
+                    bos.write(frag);
+                    return ByteBuffer.wrap(bos.getBytes(), 0, bos.getCount());
+                }
+                if (count == 3) {
+                    byte[] eapPacketHeader = new byte[]{1, 3, 0, 11, 1, 3, 0, 7, 21, 0};
+                    byte[] frag = Arrays.copyOfRange(dataBytes, 22, 23);
+                    StreamUtils.DataCollector bos = new StreamUtils.DataCollector();
+                    bos.write(eapPacketHeader);
+                    bos.write(frag);
+                    return ByteBuffer.wrap(bos.getBytes(), 0, bos.getCount());
+                }
+                throw new RuntimeException("Not expecting more than one call");
+            } catch (IOException e) {
+                throw new EAPOutputException(e);
+            }
+        }
+
+        public byte[] getDataBytes() {
+            return dataBytes;
+        }
+    }
+
+    public void testTTLSInput() {
+        AppProtocolContext context = makeAppProtocolContext(11);
+
+        final int[] fragmentAckCounts = new int[] {0};
+        StreamUtils.DataCollector dc = new StreamUtils.DataCollector() {
+            @Override
+            public void flush() {
+                ++fragmentAckCounts[0];
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                EAPPacket eapPacket = EAPPacket.fromStream(new DataInputStream(new ByteArrayInputStream(this.buf, 0, this.count)), bos);
+                assertTrue(eapPacket.getCode() == 1);
+                StreamUtils.DataCollector dc = new StreamUtils.DataCollector();
+                EAPTTLSPacket eapttlsPacket = EAPTTLSPacket.fromStream(new DataInputStream(new ByteArrayInputStream(bos.toByteArray())), dc);
+                assertTrue(eapttlsPacket.getLength() == 6);
+                assertTrue(dc.getCount() == 0);
+            }
+        };
+
+        DataOutputStream eapStream = new DataOutputStream(EAPPacket.makeWrappedOutputStream(dc, context));
+
+        DataOutputStream eapTtlsOutputStream = new DataOutputStream(EAPTTLSPacket.makeWrappedOutputStream(eapStream, context));
+
+        RadiusPacketStream1 radiusPacketStream = new RadiusPacketStream1();
+
+        EAPPacket.EAPPacketStream eapPacketStream = new EAPPacket.EAPPacketStream(radiusPacketStream);
+        EAPTTLSPacket.EAPTTLSPacketStream eapttlsPacketStream = new EAPTTLSPacket.EAPTTLSPacketStream(eapPacketStream);
+
+        TTLSByteBufferInputStream ttlsByteBufferInputStream = new TTLSByteBufferInputStream(eapTtlsOutputStream, context,
+                eapttlsPacketStream);
+
+        ByteBuffer data = ttlsByteBufferInputStream.read();
+        assertTrue(Arrays.equals(Arrays.copyOfRange(data.array(), 0, data.limit()), radiusPacketStream.getDataBytes()));
+        assertTrue(fragmentAckCounts[0] == 2);
+    }
+
+    private static byte[] randomBytes(int len) {
         byte[] a = new byte[len];
         new Random().nextBytes(a);
         return a;
