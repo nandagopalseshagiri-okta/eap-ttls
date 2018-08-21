@@ -3,6 +3,7 @@ package com.okta;
 import com.okta.radius.eap.AppProtocolContext;
 import com.okta.radius.eap.EAPOutputException;
 import com.okta.radius.eap.EAPPacket;
+import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.EAPTTLSPacket;
 import com.okta.radius.eap.StreamUtils;
 import com.okta.radius.eap.TTLSByteBufferInputStream;
@@ -14,6 +15,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Random;
@@ -90,6 +92,10 @@ public class EAPTTLSPacketTest extends TestCase {
     }
 
     public static AppProtocolContext makeAppProtocolContext(final int mtu) {
+        return makeAppProtocolContext(mtu, "Default");
+    }
+
+    public static AppProtocolContext makeAppProtocolContext(final int mtu, final String name) {
         return new AppProtocolContext() {
             private byte eapId = 1;
             private byte ttlsId = 1;
@@ -121,16 +127,19 @@ public class EAPTTLSPacketTest extends TestCase {
             }
 
             public void setFragmentFlag() {
+                log(name + " Setting more fragment flag");
                 flag = flag | 2;
             }
 
             public void setLengthFlag(long totalTTLSPacketLength) {
+                log(name + " Setting length flag");
                 messageLength = totalTTLSPacketLength;
                 // will set both L (Length) and F (fragment) flag
                 flag = flag | 3;
             }
 
             public void resetFlags() {
+                log(name + " Resetting flag");
                 flag = 0;
             }
 
@@ -138,6 +147,10 @@ public class EAPTTLSPacketTest extends TestCase {
                 return mtu;
             }
         };
+    }
+
+    private static void log(String str) {
+        System.out.println(str);
     }
 
     public void testEAPTTLS_EAP_Stacking() throws Exception {
@@ -324,6 +337,53 @@ public class EAPTTLSPacketTest extends TestCase {
         ByteBuffer data = ttlsByteBufferInputStream.read();
         assertTrue(Arrays.equals(Arrays.copyOfRange(data.array(), 0, data.limit()), radiusPacketStream.getDataBytes()));
         assertTrue(fragmentAckCounts[0] == 2);
+    }
+
+    private StreamUtils.ByteBufferOutputStream clientOutstream;
+    private StreamUtils.ByteBufferInputStream clientInStream;
+
+    private StreamUtils.ByteBufferOutputStream serverOutStream;
+    private StreamUtils.ByteBufferInputStream serverInStream;
+
+    private void createUdpOutputStreams() {
+        try {
+            int port = 2003;
+            AppProtocolContext contextServer = EAPTTLSPacketTest.makeAppProtocolContext(256, "Server");
+            AppProtocolContext contextClient = EAPTTLSPacketTest.makeAppProtocolContext(256, "Client");
+            EAPStackBuilder.ByteBufferPipe server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
+            EAPStackBuilder.ByteBufferPipe client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
+                    contextClient);
+            clientOutstream = client.outputStream;
+            serverInStream = server.inputStream;
+
+            clientInStream = client.inputStream;
+            serverOutStream = server.outputStream;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void testTTLSOverUdp() throws Exception {
+        createUdpOutputStreams();
+        final byte[] testData = randomBytes(500);
+        final byte[] testData2 = randomBytes(500);
+
+        Thread server = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ByteBuffer data = serverInStream.read();
+                assertTrue(Arrays.equals(Arrays.copyOfRange(data.array(), 0, data.limit()), testData));
+
+                serverOutStream.write(ByteBuffer.wrap(testData2));
+            }
+        });
+
+        server.start();
+        Thread.sleep(1000);
+        clientOutstream.write(ByteBuffer.wrap(testData));
+
+        ByteBuffer data = clientInStream.read();
+        assertTrue(Arrays.equals(Arrays.copyOfRange(data.array(), 0, data.limit()), testData2));
     }
 
     private static byte[] randomBytes(int len) {

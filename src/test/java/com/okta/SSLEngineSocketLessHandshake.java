@@ -3,6 +3,7 @@ package com.okta;
 import com.okta.radius.eap.AppProtocolContext;
 import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.StreamUtils;
+import com.okta.radius.eap.TTLSProtocolException;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -16,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.security.KeyStore;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ThreadFactory;
 
 /**
  * Created by nandagopal.seshagiri on 8/10/18.
@@ -65,12 +67,12 @@ public class SSLEngineSocketLessHandshake {
         }
 
         public void write(ByteBuffer byteBuffer) {
+            // Assume a flipped ByteBuffer
             ByteBuffer buffer = clone(byteBuffer);
             byteBufferBlockingQueue.add(buffer);
         }
 
         public static ByteBuffer clone(ByteBuffer original) {
-            original.flip();
             ByteBuffer clone = ByteBuffer.allocate(original.limit());
             clone.put(original.array(), 0, original.limit());
             return clone;
@@ -141,7 +143,12 @@ public class SSLEngineSocketLessHandshake {
             sslEngineResult = sslEngine.wrap(appData, outgoingEncBuffer);
             log(name + " wrap: ", sslEngineResult);
             runDelegatedTasks(sslEngineResult, sslEngine);
-            outputStream.write(outgoingEncBuffer);
+            outgoingEncBuffer.flip();
+            if (outgoingEncBuffer.limit() <= 0) {
+                log(name + " Writing outgoingEncBuffer with sub zero length=" + outgoingEncBuffer.limit());
+            } else {
+                outputStream.write(outgoingEncBuffer);
+            }
 
             outgoingEncBuffer.clear();
 
@@ -150,12 +157,135 @@ public class SSLEngineSocketLessHandshake {
                 log(name + ": sent all the application data. sslEngineResult.bytesConsumed = " + sslEngineResult.bytesConsumed());
             }
 
-            log("---- " + name + " Read start -----");
+            if (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NEED_UNWRAP) {
+                log("---- " + name + " Read start -----");
+                ByteBuffer peerData = inputStream.read();
+                if (peerData == null) {
+                    log("Input stream returned a null byte buffer");
+                    break;
+                }
+
+                unwrapBuffer.put(peerData);
+                unwrapBuffer.flip();
+
+                log(name + ": read buffer with limit=" + peerData.limit());
+
+                sslEngineResult = sslEngine.unwrap(unwrapBuffer, incomingPlainBuffer);
+                log(name + " unwrap: ", sslEngineResult);
+                runDelegatedTasks(sslEngineResult, sslEngine);
+                unwrapBuffer.compact();
+            }
+
+            if (dataSent) {
+                break;
+            }
+        }
+    }
+
+    public static class SSLByteBufferIOStream implements StreamUtils.ByteBufferOutputStream,
+            StreamUtils.ByteBufferInputStream {
+        private boolean sslHandShakeDone = false;
+        private SSLEngine sslEngine;
+        private StreamUtils.ByteBufferOutputStream outputStream;
+        private StreamUtils.ByteBufferInputStream inputStream;
+
+        private int netBufferMax = 4096;
+        private int appBufferMax = 4096;
+        private String name;
+
+        public SSLByteBufferIOStream(SSLEngine se, StreamUtils.ByteBufferOutputStream outStream,
+                                     StreamUtils.ByteBufferInputStream inStream, int netBuffer, int appBuffer,
+                                     String nameForLogging) {
+            sslEngine = se;
+            outputStream = outStream;
+            inputStream = inStream;
+            netBufferMax = netBuffer;
+            appBufferMax = appBuffer;
+            name = nameForLogging;
+        }
+
+        @Override
+        public void write(ByteBuffer byteBuffer) {
+            try {
+                handshakeLoop(byteBuffer, false);
+            } catch (Exception e) {
+                throw new TTLSProtocolException("Write to SSL outstream failed", e);
+            }
+        }
+
+        @Override
+        public ByteBuffer read() {
+            ByteBuffer unwrapBuffer = ByteBuffer.allocate(netBufferMax * 2);
+            try {
+                if (!sslHandShakeDone) {
+                    handshakeLoop(ByteBuffer.wrap(new byte[]{0}), true);
+                }
+                return unwrap(unwrapBuffer);
+            } catch (Exception e) {
+                throw new TTLSProtocolException("Read from SSL stream failed", e);
+            }
+        }
+
+        private void handshakeLoop(ByteBuffer appData, boolean dummyData) throws Exception {
+            boolean dataSent = false;
+
+            ByteBuffer outgoingEncBuffer = ByteBuffer.allocate(netBufferMax);
+
+            SSLEngineResult sslEngineResult;
+            ByteBuffer unwrapBuffer = ByteBuffer.allocate(netBufferMax * 2);
+            unwrapBuffer.clear();
+
+            while (!isEngineClosed(sslEngine)) {
+
+                log("***** " + name + " Write start ******");
+
+                sslEngineResult = sslEngine.wrap(appData, outgoingEncBuffer);
+                log(name + " wrap: ", sslEngineResult);
+                runDelegatedTasks(sslEngineResult, sslEngine);
+
+                if (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.FINISHED ||
+                        sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
+                    sslHandShakeDone = true;
+                }
+
+                outgoingEncBuffer.flip();
+                if (outgoingEncBuffer.limit() <= 0) {
+                    log(name + " Writing outgoingEncBuffer with sub zero length=" + outgoingEncBuffer.limit());
+                } else {
+                    if (sslHandShakeDone && dummyData) {
+                        break;
+                    }
+                    outputStream.write(outgoingEncBuffer);
+                }
+
+                outgoingEncBuffer.clear();
+
+                if (sslEngineResult.bytesConsumed() >= appData.limit()) {
+                    dataSent = true;
+                    log(name + ": sent all the application data. sslEngineResult.bytesConsumed = " + sslEngineResult.bytesConsumed());
+                }
+
+                if (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NEED_UNWRAP) {
+                    log("---- " + name + " Read start -----");
+                    unwrap(unwrapBuffer);
+                    unwrapBuffer.compact();
+                }
+
+                if (dataSent) {
+                    break;
+                }
+            }
+        }
+
+        private ByteBuffer unwrap(ByteBuffer unwrapBuffer) throws Exception {
+            if (!sslHandShakeDone) {
+                throw new TTLSProtocolException("calling unwrap straight without ssl handshake done");
+            }
 
             ByteBuffer peerData = inputStream.read();
             if (peerData == null) {
                 log("Input stream returned a null byte buffer");
-                break;
+                return null;
             }
 
             unwrapBuffer.put(peerData);
@@ -163,14 +293,12 @@ public class SSLEngineSocketLessHandshake {
 
             log(name + ": read buffer with limit=" + peerData.limit());
 
-            sslEngineResult = sslEngine.unwrap(unwrapBuffer, incomingPlainBuffer);
+            ByteBuffer incomingPlainBuffer = ByteBuffer.allocate(appBufferMax + 50);
+            SSLEngineResult sslEngineResult = sslEngine.unwrap(unwrapBuffer, incomingPlainBuffer);
             log(name + " unwrap: ", sslEngineResult);
             runDelegatedTasks(sslEngineResult, sslEngine);
-            unwrapBuffer.compact();
 
-            if (dataSent) {
-                break;
-            }
+            return incomingPlainBuffer;
         }
     }
 
@@ -185,28 +313,30 @@ public class SSLEngineSocketLessHandshake {
     }
 
     private void createUdpOutputStreams() {
-         try {
-             AppProtocolContext context = EAPTTLSPacketTest.makeAppProtocolContext(256);
-             EAPStackBuilder.ByteBufferPipe server = EAPStackBuilder.makeUdpReadWritePair(2000, context);
-             EAPStackBuilder.ByteBufferPipe client = EAPStackBuilder.makeUdpReadWritePair(2000, InetAddress.getByName("127.0.0.1"),
-                     context);
-             clientOutstream = client.outputStream;
-             serverInStream = server.inputStream;
+        try {
+            final int port = 2002;
+            AppProtocolContext contextServer = EAPTTLSPacketTest.makeAppProtocolContext(256, "Server");
+            AppProtocolContext contextClient = EAPTTLSPacketTest.makeAppProtocolContext(256, "Client");
+            EAPStackBuilder.ByteBufferPipe server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
+            EAPStackBuilder.ByteBufferPipe client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
+                    contextClient);
+            clientOutstream = client.outputStream;
+            serverInStream = server.inputStream;
 
-             clientInStream = client.inputStream;
-             serverOutStream = server.outputStream;
-         } catch (Exception e) {
-             throw new RuntimeException(e);
-         }
+            clientInStream = client.inputStream;
+            serverOutStream = server.outputStream;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private void performSocketLessSSL() throws Exception {
-        boolean dataDone = false;
-
         createSSLEngines();
         createBuffers();
 
-        createOutputStreams();
+        //logging = false;
+        //createOutputStreams();
+        createUdpOutputStreams();
 
         Thread client = new Thread(new Runnable() {
             public void run() {
@@ -228,8 +358,11 @@ public class SSLEngineSocketLessHandshake {
             }
         });
 
-        client.start();
         server.start();
+        Thread.sleep(1000);
+
+        client.start();
+
 
         client.join();
         server.join();

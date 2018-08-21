@@ -29,21 +29,27 @@ public class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputS
         int remainingLen = byteBuffer.limit();
         for (int i = 0; i < byteBuffer.limit(); i += maxFragmentSize) {
             appProtocolContext.resetFlags();
-            if (i == 0 &&  remainingLen > maxFragmentSize) {
+            boolean transmittingFragment = true;
+            if (i == 0 && remainingLen > maxFragmentSize) {
                 appProtocolContext.setLengthFlag(byteBuffer.limit());
             } else if (remainingLen > maxFragmentSize) {
                 appProtocolContext.setFragmentFlag();
+            } else if (remainingLen <= maxFragmentSize){
+                transmittingFragment = false;
             }
 
-            remainingLen -= transmitFragment(byteBuffer.array(), i, Math.min(remainingLen, maxFragmentSize));
+            remainingLen -= transmitFragment(byteBuffer.array(), i, Math.min(remainingLen, maxFragmentSize), transmittingFragment);
         }
     }
 
-    private int transmitFragment(byte[] array, int offset, int length) {
+    private int transmitFragment(byte[] array, int offset, int length, boolean transmittingFragment) {
         try {
+            System.out.println("Writing packet size = " + length + " as fragment = " + transmittingFragment);
             eapttlsOutStream.write(array, offset, length);
             eapttlsOutStream.flush();
-            waitForAck();
+            if (transmittingFragment) {
+                waitForAck();
+            }
             return length;
         } catch (IOException e) {
             throw new EAPOutputException(e);
@@ -52,6 +58,12 @@ public class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputS
 
     private void waitForAck() {
         StreamUtils.PacketAndData<EAPTTLSPacket> pd = ttlsPacketInputStream.readPacket();
-        //assertTrue(pd.data.limit() == 0);
+        if (pd.data.limit() != 0) {
+            throw new TTLSProtocolException("Expected TTLS ack packet with no data - receviced data with length = " + pd.data.limit());
+        }
+
+        if (pd.packet.getFlag() != 0) {
+            throw new TTLSProtocolException("Expected TTLS ack packet with no flags set");
+        }
     }
 }
