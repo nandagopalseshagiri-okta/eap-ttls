@@ -29,12 +29,12 @@ public class EAPStackBuilder {
     public static ByteBufferPipe buildEAPTTLSStack(DataOutputStream lowerOutputStream,
                                                    StreamUtils.ByteBufferInputStream lowerPacketInputStream,
                                                    AppProtocolContext context) {
-        DataOutputStream eapStream = new DataOutputStream(EAPPacket.makeWrappedOutputStream(lowerOutputStream, context));
+        //DataOutputStream eapStream = new DataOutputStream(EAPPacket.makeWrappedOutputStream(lowerOutputStream, context));
 
-        DataOutputStream eapTtlsOutputStream = new DataOutputStream(EAPTTLSPacket.makeWrappedOutputStream(eapStream, context));
+        DataOutputStream eapTtlsOutputStream = new DataOutputStream(EAPTTLSPacket.makeWrappedOutputStream(lowerOutputStream, context));
 
-        EAPPacket.EAPPacketStream eapPacketStream = new EAPPacket.EAPPacketStream(lowerPacketInputStream);
-        EAPTTLSPacket.EAPTTLSPacketStream eapttlsPacketStream = new EAPTTLSPacket.EAPTTLSPacketStream(eapPacketStream);
+        //EAPPacket.EAPPacketStream eapPacketStream = new EAPPacket.EAPPacketStream(lowerPacketInputStream);
+        EAPTTLSPacket.EAPTTLSPacketStream eapttlsPacketStream = new EAPTTLSPacket.EAPTTLSPacketStream(lowerPacketInputStream);
 
         ByteBufferPipe pipe = new ByteBufferPipe();
         pipe.inputStream = new TTLSByteBufferInputStream(eapTtlsOutputStream, context,

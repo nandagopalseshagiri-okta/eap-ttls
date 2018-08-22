@@ -4,6 +4,7 @@ import com.okta.radius.eap.AppProtocolContext;
 import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.StreamUtils;
 import com.okta.radius.eap.TTLSProtocolException;
+import junit.framework.Assert;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -15,6 +16,7 @@ import java.io.FileInputStream;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.security.KeyStore;
+import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ThreadFactory;
@@ -182,6 +184,21 @@ public class SSLEngineSocketLessHandshake {
         }
     }
 
+    private ByteBuffer sslEnginePeerLoopEx(String name, SSLEngine sslEngine, ByteBuffer appData, StreamUtils.ByteBufferOutputStream outputStream,
+                                   StreamUtils.ByteBufferInputStream inputStream) throws Exception {
+        SSLByteBufferIOStream sslByteBufferIOStream = new SSLByteBufferIOStream(sslEngine, outputStream, inputStream,
+                netBufferMax, appBufferMax, name);
+
+        ByteBuffer result = null;
+        if ("server".equals(name)) {
+            result = sslByteBufferIOStream.read();
+        } else {
+            sslByteBufferIOStream.write(appData);
+        }
+
+        return result;
+    }
+
     public static class SSLByteBufferIOStream implements StreamUtils.ByteBufferOutputStream,
             StreamUtils.ByteBufferInputStream {
         private boolean sslHandShakeDone = false;
@@ -243,8 +260,11 @@ public class SSLEngineSocketLessHandshake {
                 log(name + " wrap: ", sslEngineResult);
                 runDelegatedTasks(sslEngineResult, sslEngine);
 
-                if (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.FINISHED ||
-                        sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING) {
+                if (sslEngineResult.bytesConsumed() >= appData.limit() &&
+                        (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.FINISHED ||
+                        sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NOT_HANDSHAKING)) {
+                    // we are assuming that hand-shake data and app data will not be encrypted together
+                    // inside the outgoingEncBuffer in one call to wrap.
                     sslHandShakeDone = true;
                 }
 
@@ -278,10 +298,6 @@ public class SSLEngineSocketLessHandshake {
         }
 
         private ByteBuffer unwrap(ByteBuffer unwrapBuffer) throws Exception {
-            if (!sslHandShakeDone) {
-                throw new TTLSProtocolException("calling unwrap straight without ssl handshake done");
-            }
-
             ByteBuffer peerData = inputStream.read();
             if (peerData == null) {
                 log("Input stream returned a null byte buffer");
@@ -341,7 +357,7 @@ public class SSLEngineSocketLessHandshake {
         Thread client = new Thread(new Runnable() {
             public void run() {
                 try {
-                    sslEnginePeerLoop("client", clientEngine, clientOut, clientOutstream, clientInStream);
+                    sslEnginePeerLoopEx("client", clientEngine, clientOut, clientOutstream, clientInStream);
                 } catch (Exception e) {
                     log("Client side exception = " + e);
                 }
@@ -351,7 +367,9 @@ public class SSLEngineSocketLessHandshake {
         Thread server = new Thread(new Runnable() {
             public void run() {
                 try {
-                    sslEnginePeerLoop("server", serverEngine, serverOut, serverOutStream, serverInStream);
+                    ByteBuffer buffer = sslEnginePeerLoopEx("server", serverEngine, serverOut, serverOutStream, serverInStream);
+                    buffer.flip();
+                    Assert.assertTrue(Arrays.equals(clientOut.array(), Arrays.copyOfRange(buffer.array(), 0, buffer.limit())));
                 } catch (Exception e) {
                     log("server side exception = " + e);
                 }
