@@ -19,7 +19,6 @@ import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ThreadFactory;
 
 /**
  * Created by nandagopal.seshagiri on 8/10/18.
@@ -51,7 +50,8 @@ public class SSLEngineSocketLessHandshake {
     private StreamUtils.ByteBufferOutputStream serverOutStream;
     private StreamUtils.ByteBufferInputStream serverInStream;
 
-    private static class MemQueuePipe implements StreamUtils.ByteBufferOutputStream, StreamUtils.ByteBufferInputStream {
+    public static class MemQueuePipe implements StreamUtils.ByteBufferOutputStream, StreamUtils.ByteBufferInputStream {
+
         private BlockingQueue<ByteBuffer> byteBufferBlockingQueue;
 
         public MemQueuePipe(BlockingQueue<ByteBuffer> queue) {
@@ -333,8 +333,8 @@ public class SSLEngineSocketLessHandshake {
             final int port = 2002;
             AppProtocolContext contextServer = EAPTTLSPacketTest.makeAppProtocolContext(256, "Server");
             AppProtocolContext contextClient = EAPTTLSPacketTest.makeAppProtocolContext(256, "Client");
-            EAPStackBuilder.ByteBufferPipe server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
-            EAPStackBuilder.ByteBufferPipe client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
+            EAPStackBuilder.ByteBufferSinkNSource server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
+            EAPStackBuilder.ByteBufferSinkNSource client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
                     contextClient);
             clientOutstream = client.outputStream;
             serverInStream = server.inputStream;

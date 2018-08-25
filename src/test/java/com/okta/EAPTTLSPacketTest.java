@@ -5,20 +5,28 @@ import com.okta.radius.eap.EAPOutputException;
 import com.okta.radius.eap.EAPPacket;
 import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.EAPTTLSPacket;
+import com.okta.radius.eap.InvalidEAPPacketException;
 import com.okta.radius.eap.StreamUtils;
 import com.okta.radius.eap.TTLSByteBufferInputStream;
 import com.okta.radius.eap.TTLSByteBufferOutputStream;
 import junit.framework.TestCase;
 
+import javax.net.ssl.SSLEngine;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * Created by nandagopal.seshagiri on 8/9/18.
@@ -350,8 +358,8 @@ public class EAPTTLSPacketTest extends TestCase {
             int port = 2003;
             AppProtocolContext contextServer = EAPTTLSPacketTest.makeAppProtocolContext(256, "Server");
             AppProtocolContext contextClient = EAPTTLSPacketTest.makeAppProtocolContext(256, "Client");
-            EAPStackBuilder.ByteBufferPipe server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
-            EAPStackBuilder.ByteBufferPipe client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
+            EAPStackBuilder.ByteBufferSinkNSource server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
+            EAPStackBuilder.ByteBufferSinkNSource client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
                     contextClient);
             clientOutstream = client.outputStream;
             serverInStream = server.inputStream;
@@ -390,5 +398,159 @@ public class EAPTTLSPacketTest extends TestCase {
         byte[] a = new byte[len];
         new Random().nextBytes(a);
         return a;
+    }
+
+    public static class TargetBoundAppProtocolContext implements AppProtocolContext {
+        @Override
+        public EAPTTLSPacket makeEAPTTLSPacket() {
+            return null;
+        }
+
+        @Override
+        public EAPPacket makeEAPPacket() {
+            return null;
+        }
+
+        @Override
+        public void setStartFlag() {
+
+        }
+
+        @Override
+        public void setFragmentFlag() {
+
+        }
+
+        @Override
+        public void setLengthFlag(long totalTTLSPacketLength) {
+
+        }
+
+        @Override
+        public void resetFlags() {
+
+        }
+
+        @Override
+        public int getNetworkMTU() {
+            return 0;
+        }
+    }
+
+    public static class SourceBasedMultiplexingPacketQueue {
+        private Map<InetSocketAddress, SSLEngineSocketLessHandshake.MemQueuePipe> sourceIPPortToSS = new ConcurrentHashMap<>();
+
+        public StreamUtils.ByteBufferInputStream addSourceNSinkFor(InetSocketAddress source, ByteBuffer packet) {
+            SSLEngineSocketLessHandshake.MemQueuePipe queuePipe = null;
+            synchronized (this) {
+                if (sourceIPPortToSS.containsKey(source)) {
+                    queuePipe = sourceIPPortToSS.get(source);
+                } else {
+                    queuePipe = new SSLEngineSocketLessHandshake.MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(50));
+                    sourceIPPortToSS.put(source, queuePipe);
+                }
+            }
+
+            if (packet != null) {
+                queuePipe.write(packet);
+            }
+
+            return queuePipe;
+        }
+
+        public boolean routePacketIfKnownSource(InetSocketAddress source, ByteBuffer packet) {
+            SSLEngineSocketLessHandshake.MemQueuePipe queuePipe = sourceIPPortToSS.get(source);
+            if (queuePipe == null) {
+                return false;
+            }
+
+            queuePipe.write(packet);
+            return true;
+        }
+    }
+
+    public interface EAPMessageHandler {
+        void handleEAPMessage(InetSocketAddress fromAddress, ByteBuffer eapPacket);
+        void setDataOuputStream(DataOutputStream globalOutputStream);
+    }
+
+    public static class EAPOrchestrator implements EAPMessageHandler {
+        private SSLEngineSocketLessHandshake.MemQueuePipe eapInPacketQueue =
+                new SSLEngineSocketLessHandshake.MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(50));
+
+        private EAPStackBuilder.ByteBufferSinkNSource eapSinkNSource;
+
+        private SourceBasedMultiplexingPacketQueue multiplexingPacketQueue =
+                new SourceBasedMultiplexingPacketQueue();
+
+        private DataOutputStream globalOutputStream;
+
+        private volatile boolean eapProcessorStopped = false;
+
+        private ThreadPoolExecutor threadPoolExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(20);;
+
+        private SSLEngine newSSLEngine() {
+            //TODO: Make the right ssl engine object after setting the right parameters
+            return null;
+        }
+
+        private void onEAPIdentityPacketReceived(InetSocketAddress fromAddress) {
+            StreamUtils.ByteBufferInputStream packetStream = multiplexingPacketQueue.addSourceNSinkFor(fromAddress, null);
+            EAPStackBuilder.ByteBufferSinkNSource ss = EAPStackBuilder.buildEAPTTLSStack(globalOutputStream, packetStream,
+                    new TargetBoundAppProtocolContext());
+
+            final SSLEngineSocketLessHandshake.SSLByteBufferIOStream sslByteBufferIOStream =
+                    new SSLEngineSocketLessHandshake.SSLByteBufferIOStream(newSSLEngine(), ss.outputStream, ss.inputStream,
+                    4096*4, 4096*4, "server");
+
+            threadPoolExecutor.submit(new Runnable() {
+                @Override
+                public void run() {
+                    eapPacketProcessingThread(sslByteBufferIOStream);
+                }
+            });
+        }
+
+        @Override
+        public void handleEAPMessage(InetSocketAddress fromAddress, ByteBuffer eapPacket) {
+            if (multiplexingPacketQueue.routePacketIfKnownSource(fromAddress, eapPacket)) {
+                return;
+            }
+
+            EAPPacket.EAPPacketStream eapPacketStream = (EAPPacket.EAPPacketStream) eapSinkNSource.inputStream;
+            try {
+                eapInPacketQueue.write(eapPacket);
+                StreamUtils.PacketAndData<EAPPacket> packetAndData = eapPacketStream.readPacket();
+                if (packetAndData.packet.getCode() != 1 || packetAndData.data.limit() <= 0) {
+                    // if it is not a response EAP packet or there is no data return
+                    return;
+                }
+
+                if (packetAndData.data.array()[0] != 1) {
+                    // not a identity packet - ignore
+                    return;
+                }
+
+                onEAPIdentityPacketReceived(fromAddress);
+            } catch (InvalidEAPPacketException e) {
+                // ignore invalid eap packets.
+            }
+        }
+
+        @Override
+        public void setDataOuputStream(DataOutputStream globalOutputStream) {
+            this.globalOutputStream = globalOutputStream;
+            eapSinkNSource = EAPStackBuilder.buildEAPOnlyStack(globalOutputStream, eapInPacketQueue, new TargetBoundAppProtocolContext());
+        }
+
+
+        private void eapPacketProcessingThread(SSLEngineSocketLessHandshake.SSLByteBufferIOStream sslByteBufferIOStream) {
+            while (!eapProcessorStopped) {
+                sslByteBufferIOStream.read();
+                // TODO: once the hand-shake is done - we should forward to upstream protocol
+                // for now we just break out.
+                break;
+            }
+        }
     }
 }

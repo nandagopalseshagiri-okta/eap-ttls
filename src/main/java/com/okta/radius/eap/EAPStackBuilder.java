@@ -1,7 +1,5 @@
 package com.okta.radius.eap;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 import com.google.common.io.BaseEncoding;
 
 import java.io.ByteArrayOutputStream;
@@ -13,7 +11,6 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.concurrent.TimeUnit;
 
 import static com.okta.radius.eap.EAPStackBuilder.UdpByteBufferStream.datagramSha1;
 
@@ -21,14 +18,14 @@ import static com.okta.radius.eap.EAPStackBuilder.UdpByteBufferStream.datagramSh
  * Created by nandagopal.seshagiri on 8/17/18.
  */
 public class EAPStackBuilder {
-    public static class ByteBufferPipe {
+    public static class ByteBufferSinkNSource {
         public StreamUtils.ByteBufferInputStream inputStream;
         public StreamUtils.ByteBufferOutputStream outputStream;
     }
 
-    public static ByteBufferPipe buildEAPTTLSStack(DataOutputStream lowerOutputStream,
-                                                   StreamUtils.ByteBufferInputStream lowerPacketInputStream,
-                                                   AppProtocolContext context) {
+    public static ByteBufferSinkNSource buildEAPTTLSStack(DataOutputStream lowerOutputStream,
+                                                          StreamUtils.ByteBufferInputStream lowerPacketInputStream,
+                                                          AppProtocolContext context) {
         //DataOutputStream eapStream = new DataOutputStream(EAPPacket.makeWrappedOutputStream(lowerOutputStream, context));
 
         DataOutputStream eapTtlsOutputStream = new DataOutputStream(EAPTTLSPacket.makeWrappedOutputStream(lowerOutputStream, context));
@@ -36,11 +33,32 @@ public class EAPStackBuilder {
         //EAPPacket.EAPPacketStream eapPacketStream = new EAPPacket.EAPPacketStream(lowerPacketInputStream);
         EAPTTLSPacket.EAPTTLSPacketStream eapttlsPacketStream = new EAPTTLSPacket.EAPTTLSPacketStream(lowerPacketInputStream);
 
-        ByteBufferPipe pipe = new ByteBufferPipe();
+        ByteBufferSinkNSource pipe = new ByteBufferSinkNSource();
         pipe.inputStream = new TTLSByteBufferInputStream(eapTtlsOutputStream, context,
                 eapttlsPacketStream);
         pipe.outputStream = new TTLSByteBufferOutputStream(eapTtlsOutputStream, context, eapttlsPacketStream);
 
+        return pipe;
+    }
+
+    public static ByteBufferSinkNSource buildEAPOnlyStack(DataOutputStream lowerOutputStream,
+                                                          StreamUtils.ByteBufferInputStream lowerPacketInputStream,
+                                                          AppProtocolContext context) {
+        final DataOutputStream eapStream = new DataOutputStream(EAPPacket.makeWrappedOutputStream(lowerOutputStream, context));
+        final EAPPacket.EAPPacketStream eapPacketStream = new EAPPacket.EAPPacketStream(lowerPacketInputStream);
+        ByteBufferSinkNSource pipe = new ByteBufferSinkNSource();
+        pipe.inputStream = eapPacketStream;
+        pipe.outputStream = new StreamUtils.ByteBufferOutputStream() {
+            @Override
+            public void write(ByteBuffer byteBuffer) {
+                try {
+                    eapStream.write(byteBuffer.array(), 0, byteBuffer.limit());
+                    eapStream.flush();
+                } catch (IOException e) {
+                    throw new EAPOutputException(e);
+                }
+            }
+        };
         return pipe;
     }
 
@@ -154,7 +172,7 @@ public class EAPStackBuilder {
         }
     }
 
-    public static ByteBufferPipe makeUdpReadWritePair(int port, AppProtocolContext context) {
+    public static ByteBufferSinkNSource makeUdpReadWritePair(int port, AppProtocolContext context) {
         try {
             DatagramSocket socket = new DatagramSocket(port);
             UdpByteBufferStream readStream = new UdpByteBufferStream(socket);
@@ -165,7 +183,7 @@ public class EAPStackBuilder {
         }
     }
 
-    public static ByteBufferPipe makeUdpReadWritePair(int port, InetAddress address, AppProtocolContext context) {
+    public static ByteBufferSinkNSource makeUdpReadWritePair(int port, InetAddress address, AppProtocolContext context) {
         try {
             DatagramSocket socket = new DatagramSocket();
             UdpFlusher writeStream = new UdpFlusher(socket, new TargetAddressProviderImpl(address, port));
