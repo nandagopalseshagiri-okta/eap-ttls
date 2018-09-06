@@ -141,6 +141,17 @@ public class EAPStackBuilder {
             }
         }
 
+        public DatagramPacket readPacket() {
+            try {
+                byte[] buf = new byte[4096];
+                DatagramPacket dg = new DatagramPacket(buf, buf.length);
+                udpSocket.receive(dg);
+                return dg;
+            } catch (Exception e) {
+                throw new EAPOutputException(e);
+            }
+        }
+
         @Override
         public InetAddress getTargetIP() {
             return returnAddress;

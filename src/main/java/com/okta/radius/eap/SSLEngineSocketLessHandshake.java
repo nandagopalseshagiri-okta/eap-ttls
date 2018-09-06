@@ -1,24 +1,16 @@
-package com.okta;
+package com.okta.radius.eap;
 
-import com.okta.radius.eap.AppProtocolContext;
-import com.okta.radius.eap.EAPStackBuilder;
-import com.okta.radius.eap.StreamUtils;
-import com.okta.radius.eap.TTLSProtocolException;
-import junit.framework.Assert;
-
-import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLSession;
-import javax.net.ssl.TrustManagerFactory;
-import java.io.FileInputStream;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+
+import static com.okta.radius.eap.TargetBoundAppProtocolContext.makeAppProtocolContext;
 
 /**
  * Created by nandagopal.seshagiri on 8/10/18.
@@ -37,10 +29,6 @@ public class SSLEngineSocketLessHandshake {
     private SSLEngine serverEngine;
     private ByteBuffer serverOut;
 
-    private static String keyStoreFile = "/Users/nandagopal.seshagiri/keystore.jks";
-    private static String trustStoreFile = keyStoreFile;
-    private static String passwd = "password";
-
     private int netBufferMax = 4096;
     private int appBufferMax = 4096;
 
@@ -49,6 +37,8 @@ public class SSLEngineSocketLessHandshake {
 
     private StreamUtils.ByteBufferOutputStream serverOutStream;
     private StreamUtils.ByteBufferInputStream serverInStream;
+
+    private SSLContextInitializer sslContextInitializer;
 
     public static class MemQueuePipe implements StreamUtils.ByteBufferOutputStream, StreamUtils.ByteBufferInputStream {
 
@@ -97,26 +87,11 @@ public class SSLEngineSocketLessHandshake {
     }
 
     public SSLEngineSocketLessHandshake() throws Exception {
+        String keyStoreFile = "/Users/nandagopal.seshagiri/keystore.jks";
+        String passwd = "password";
 
-        KeyStore ks = KeyStore.getInstance("JKS");
-        KeyStore ts = KeyStore.getInstance("JKS");
-
-        char[] passphrase = passwd.toCharArray();
-
-        ks.load(new FileInputStream(keyStoreFile), passphrase);
-        ts.load(new FileInputStream(trustStoreFile), passphrase);
-
-        KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
-        kmf.init(ks, passphrase);
-
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance("SunX509");
-        tmf.init(ts);
-
-        SSLContext sslCtx = SSLContext.getInstance("TLS");
-
-        sslCtx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
-
-        sslc = sslCtx;
+        sslContextInitializer = new SSLContextInitializer(keyStoreFile, keyStoreFile, passwd);
+        sslc = sslContextInitializer.getSslc();
     }
 
     // Loop until engine is close - wrap and then call unwrap
@@ -331,8 +306,8 @@ public class SSLEngineSocketLessHandshake {
     private void createUdpOutputStreams() {
         try {
             final int port = 2002;
-            AppProtocolContext contextServer = EAPTTLSPacketTest.makeAppProtocolContext(256, "Server");
-            AppProtocolContext contextClient = EAPTTLSPacketTest.makeAppProtocolContext(256, "Client");
+            AppProtocolContext contextServer = makeAppProtocolContext(256, "Server", true);
+            AppProtocolContext contextClient = makeAppProtocolContext(256, "Client", false);
             EAPStackBuilder.ByteBufferSinkNSource server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
             EAPStackBuilder.ByteBufferSinkNSource client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
                     contextClient);
@@ -369,7 +344,7 @@ public class SSLEngineSocketLessHandshake {
                 try {
                     ByteBuffer buffer = sslEnginePeerLoopEx("server", serverEngine, serverOut, serverOutStream, serverInStream);
                     buffer.flip();
-                    Assert.assertTrue(Arrays.equals(clientOut.array(), Arrays.copyOfRange(buffer.array(), 0, buffer.limit())));
+                    assertTrue(Arrays.equals(clientOut.array(), Arrays.copyOfRange(buffer.array(), 0, buffer.limit())));
                 } catch (Exception e) {
                     log("server side exception = " + e);
                 }
@@ -384,6 +359,12 @@ public class SSLEngineSocketLessHandshake {
 
         client.join();
         server.join();
+    }
+
+    private void assertTrue(boolean equals) {
+        if (!equals) {
+            throw new RuntimeException("Assertion failed");
+        }
     }
 
     private void createSSLEngines() throws Exception {

@@ -24,6 +24,8 @@ public class TTLSByteBufferInputStream implements StreamUtils.ByteBufferInputStr
     public ByteBuffer read() {
         StreamUtils.DataCollector bos = new StreamUtils.DataCollector();
         StreamUtils.PacketAndData<EAPTTLSPacket> pd = ttlsPacketInputStream.readPacket();
+
+        appProtocolContext.latchToIncomingPacketIdentifier(pd.packet.getIdentifier());
         bos.write(pd.data.array(), 0, pd.data.limit());
         for (; pd.packet.isAFragment(); bos.write(pd.data.array(), 0, pd.data.limit())) {
             System.out.println("Read a packet fragment of size = " + pd.data.limit());

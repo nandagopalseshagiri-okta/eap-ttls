@@ -69,6 +69,14 @@ public class StreamUtils {
     }
 
     public static class DataCollector extends ByteArrayOutputStream {
+        public DataCollector() {
+            super();
+        }
+
+        public DataCollector(int size) {
+            super(size);
+        }
+
         public byte[] getBytes() {
             return buf;
         }

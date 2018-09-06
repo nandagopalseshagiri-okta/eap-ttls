@@ -11,4 +11,6 @@ public interface AppProtocolContext {
     void setLengthFlag(long totalTTLSPacketLength);
     void resetFlags();
     int getNetworkMTU();
+    void latchToIncomingPacketIdentifier(int packetId);
+    void incrementPacketId();
 }

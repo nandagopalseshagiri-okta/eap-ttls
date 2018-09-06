@@ -1,21 +1,30 @@
 package com.okta;
 
 import com.okta.radius.eap.AppProtocolContext;
+import com.okta.radius.eap.DatagramPacketSink;
+import com.okta.radius.eap.EAPOrchestrator;
 import com.okta.radius.eap.EAPPacket;
+import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.EAPTTLSPacket;
+import com.okta.radius.eap.LogHelper;
+import org.tinyradius.attribute.RadiusAttribute;
+import org.tinyradius.packet.RadiusPacket;
+import org.tinyradius.util.RadiusServer;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.util.List;
 
 import static com.okta.radius.eap.EAPTTLSPacket.makeWrappedOutputStream;
 
-/**
- * Hello world!
- *
- */
-public class App 
+public class App
 {
     static byte[] readPacket() {
         return new byte[0];
@@ -27,39 +36,6 @@ public class App
         }
     }
 
-    private static class AppProtocolContextImpl implements AppProtocolContext {
-        public EAPTTLSPacket makeEAPTTLSPacket() {
-            byte[] packetData = new byte[] {1, 2, 0, 5, 7, 0, 10, 11, 12, 13, 14};
-            ByteArrayOutputStream bos = new ByteArrayOutputStream(128);
-            EAPTTLSPacket packet = EAPTTLSPacket.fromStream(new DataInputStream(new ByteArrayInputStream(packetData)), bos);
-            return packet;
-        }
-
-        public EAPPacket makeEAPPacket() {
-            return new EAPPacket();
-        }
-
-        public void setStartFlag() {
-
-        }
-
-        public void setFragmentFlag() {
-
-        }
-
-        public void setLengthFlag(long totalTTLSPacketLength) {
-
-        }
-
-        public void resetFlags() {
-
-        }
-
-        public int getNetworkMTU() {
-            return 0;
-        }
-    }
-
     public static byte[] feedDownProtocolStack(byte[] input, AppProtocolContext context) {
         DataCollector dc = new DataCollector();
         EAPTTLSPacket packet = context.makeEAPTTLSPacket();
@@ -67,9 +43,78 @@ public class App
         return dc.getBytes();
     }
 
-    public static void main( String[] args ) {
-        AppProtocolContextImpl appProtocolContext = new AppProtocolContextImpl();
+    public static String sharedSecret = "notImportant";
 
-        EAPTTLSPacket packet = appProtocolContext.makeEAPTTLSPacket();
+    public static class TestRadiusServer extends RadiusServer {
+        @Override
+        public String getSharedSecret(InetSocketAddress inetSocketAddress) {
+            return sharedSecret;
+        }
+
+        @Override
+        public String getUserPassword(String s) {
+            return null;
+        }
+
+        public RadiusPacket fromDatagram(DatagramPacket datagramPacket) {
+            try {
+                return makeRadiusPacket(datagramPacket, sharedSecret);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+    };
+
+    private static ByteBuffer combine(List<RadiusAttribute> attributes) {
+        ByteBuffer buffer = ByteBuffer.allocate(attributes.size() * 128);
+        for (RadiusAttribute a : attributes) {
+            buffer.put(a.getAttributeData());
+        }
+        buffer.flip();
+        return buffer;
+    }
+
+    public static void testRadiusServerIntegration(int port) throws Exception {
+        final DatagramSocket socket = new DatagramSocket(port);
+        EAPStackBuilder.UdpByteBufferStream readStream = new EAPStackBuilder.UdpByteBufferStream(socket);
+        EAPOrchestrator eapOrchestrator = new EAPOrchestrator(sharedSecret);
+        TestRadiusServer rs = new TestRadiusServer();
+
+        DatagramPacketSink dps = new DatagramPacketSink() {
+            @Override
+            public void send(DatagramPacket packet) throws IOException {
+                socket.send(packet);
+            }
+        };
+
+        while (true) {
+            DatagramPacket dp = readStream.readPacket();
+            byte actualPacketType = 0;
+            if (dp.getData().length > 0) {
+                actualPacketType = dp.getData()[0];
+                dp.getData()[0] = 2;
+            }
+            RadiusPacket packet = rs.fromDatagram(dp);
+            List<RadiusAttribute> attrs = packet.getAttributes(79);
+            if (attrs.isEmpty()) {
+                System.out.println("No EAP message in the RADIUS packet");
+                continue;
+            }
+
+            ByteBuffer eapData = combine(attrs);
+            eapOrchestrator.handleEAPMessage((InetSocketAddress) dp.getSocketAddress(), eapData, dps, packet);
+        }
+    }
+
+    public static void main( String[] args ) {
+        try {
+            int port = 1812;
+            if (args.length > 0) {
+                port = Integer.parseInt(args[0]);
+            }
+            testRadiusServerIntegration(port);
+        } catch (Exception e) {
+            LogHelper.log("Failed with exception e = " + e);
+        }
     }
 }

@@ -20,12 +20,17 @@ public class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputS
         ttlsPacketInputStream = packetInputStream;
     }
 
+    public DataOutputStream getEapttlsOutStream() {
+        return eapttlsOutStream;
+    }
+
     public void write(ByteBuffer byteBuffer) {
         int maxFragmentSize = appProtocolContext.getNetworkMTU();
         if (maxFragmentSize <= 0) {
             maxFragmentSize = 512;
         }
 
+        appProtocolContext.incrementPacketId();
         int remainingLen = byteBuffer.limit();
         for (int i = 0; i < byteBuffer.limit(); i += maxFragmentSize) {
             appProtocolContext.resetFlags();
