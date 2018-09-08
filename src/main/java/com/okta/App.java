@@ -66,7 +66,7 @@ public class App
     };
 
     private static ByteBuffer combine(List<RadiusAttribute> attributes) {
-        ByteBuffer buffer = ByteBuffer.allocate(attributes.size() * 128);
+        ByteBuffer buffer = ByteBuffer.allocate(attributes.size() * 256);
         for (RadiusAttribute a : attributes) {
             buffer.put(a.getAttributeData());
         }
@@ -74,7 +74,7 @@ public class App
         return buffer;
     }
 
-    public static void testRadiusServerIntegration(int port) throws Exception {
+    public static void testRadiusServerIntegration(int port, String sharedSecret) throws Exception {
         final DatagramSocket socket = new DatagramSocket(port);
         EAPStackBuilder.UdpByteBufferStream readStream = new EAPStackBuilder.UdpByteBufferStream(socket);
         EAPOrchestrator eapOrchestrator = new EAPOrchestrator(sharedSecret);
@@ -97,9 +97,11 @@ public class App
             RadiusPacket packet = rs.fromDatagram(dp);
             List<RadiusAttribute> attrs = packet.getAttributes(79);
             if (attrs.isEmpty()) {
-                System.out.println("No EAP message in the RADIUS packet");
+                System.out.println("No EAP message in the RADIUS packet - ignoring packet");
                 continue;
             }
+
+            System.out.println("Received RADIUS packet with EAP message id=" + packet.getPacketIdentifier());
 
             ByteBuffer eapData = combine(attrs);
             eapOrchestrator.handleEAPMessage((InetSocketAddress) dp.getSocketAddress(), eapData, dps, packet);
@@ -109,10 +111,14 @@ public class App
     public static void main( String[] args ) {
         try {
             int port = 1812;
+            String ss = App.sharedSecret;
             if (args.length > 0) {
                 port = Integer.parseInt(args[0]);
             }
-            testRadiusServerIntegration(port);
+            if (args.length > 1) {
+                ss = args[1];
+            }
+            testRadiusServerIntegration(port, ss);
         } catch (Exception e) {
             LogHelper.log("Failed with exception e = " + e);
         }

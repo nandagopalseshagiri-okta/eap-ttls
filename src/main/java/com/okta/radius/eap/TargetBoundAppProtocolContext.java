@@ -53,19 +53,19 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
     }
 
     public void setStartFlag() {
-        flag = flag | 4;
+        flag = flag | 0x20;
     }
 
     public void setFragmentFlag() {
         log(name + " Setting more fragment flag");
-        flag = flag | 2;
+        flag = flag | 0x40;
     }
 
     public void setLengthFlag(long totalTTLSPacketLength) {
         log(name + " Setting length flag");
         messageLength = totalTTLSPacketLength;
         // will set both L (Length) and F (fragment) flag
-        flag = flag | 3;
+        flag = flag | 0xC0;
     }
 
     public void resetFlags() {

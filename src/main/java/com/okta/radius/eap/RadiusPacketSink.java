@@ -21,21 +21,44 @@ import java.util.Arrays;
 public class RadiusPacketSink implements DatagramPacketSink {
     private String radiusStateValue;
     private DatagramPacketSink lowerLevelSink;
-    private RadiusPacket radiusRequest;
+    private RadiusRequestPacketProvider radiusRequestPacketProvider;
     private String shareSecret;
 
     private static final int MAX_ATTR_LEN = 253;
-    public static final int EAP_MESSAGE_ATTR = 79;
     private static final int RADIUS_ACCESS_CHALLENGE = 11;
-    private static final int RADIUS_STATE_ATTR = 24;
-    private static final int MESSAGE_AUTHENTICATOR_ATTR = 80;
 
+    public static final int EAP_MESSAGE_ATTR = 79;
+    public static final int RADIUS_STATE_ATTR = 24;
+    public static final int MESSAGE_AUTHENTICATOR_ATTR = 80;
 
-    public RadiusPacketSink(String radiusState, RadiusPacket radiusRequest, String sharedSecret,
+    public interface RadiusRequestPacketProvider {
+        RadiusPacket getRequestPacket();
+        void setRequestPacket(RadiusPacket packet);
+    }
+
+    public static class RadiusRequestPacketProviderImpl implements RadiusRequestPacketProvider {
+        private RadiusPacket radiusPacket;
+
+        public RadiusRequestPacketProviderImpl(RadiusPacket startingRadiusPacket) {
+            radiusPacket = startingRadiusPacket;
+        }
+
+        @Override
+        public RadiusPacket getRequestPacket() {
+            return radiusPacket;
+        }
+
+        @Override
+        public void setRequestPacket(RadiusPacket packet) {
+            radiusPacket = packet;
+        }
+    }
+
+    public RadiusPacketSink(String radiusState, RadiusRequestPacketProvider rrpp, String sharedSecret,
                             DatagramPacketSink lowerSink) {
         this.radiusStateValue = radiusState;
         this.lowerLevelSink = lowerSink;
-        this.radiusRequest = radiusRequest;
+        this.radiusRequestPacketProvider = rrpp;
         this.shareSecret = sharedSecret;
     }
 
@@ -43,6 +66,8 @@ public class RadiusPacketSink implements DatagramPacketSink {
     public void send(DatagramPacket packet) throws IOException {
         MACAdaptedRadiusPacket radiusPacket = new MACAdaptedRadiusPacket();
         radiusPacket.setPacketType(RADIUS_ACCESS_CHALLENGE);
+
+        RadiusPacket radiusRequest = radiusRequestPacketProvider.getRequestPacket();
         radiusPacket.setPacketIdentifier(radiusRequest.getPacketIdentifier());
 
         for(int offset = 0; addEAPAttr(EAP_MESSAGE_ATTR, packet, offset, radiusPacket); offset += MAX_ATTR_LEN) {
@@ -75,7 +100,7 @@ public class RadiusPacketSink implements DatagramPacketSink {
             return false;
         }
 
-        int toIndex = Math.min(MAX_ATTR_LEN, packet.getData().length - offset);
+        int toIndex = offset + Math.min(MAX_ATTR_LEN, packet.getData().length - offset);
 
         radiusPacket.addAttribute(new RadiusAttribute(attrType, Arrays.copyOfRange(packet.getData(), offset, toIndex)));
         return true;

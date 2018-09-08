@@ -63,11 +63,11 @@ public class EAPTTLSPacket {
     }
 
     public boolean hasMessageLength() {
-        return (flag & 1) == 1;
+        return (flag & 0x80) == 0x80;
     }
 
     public boolean isAFragment() {
-        return (flag & 2) == 2;
+        return (flag & 0x40) == 0x40;
     }
 
     public void setCode(int code) {

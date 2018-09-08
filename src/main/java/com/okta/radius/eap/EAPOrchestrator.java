@@ -3,12 +3,15 @@ package com.okta.radius.eap;
 import org.tinyradius.packet.RadiusPacket;
 
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLSession;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.file.FileSystems;
+import java.nio.file.Path;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
@@ -52,11 +55,17 @@ public class EAPOrchestrator implements EAPMessageHandler {
     private volatile boolean eapProcessorStopped = false;
 
     private ThreadPoolExecutor threadPoolExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(20);
-    ;
+
+    private SSLContextInitializer sslContextInitializer;
+
+
 
     private SSLEngine newSSLEngine() {
-        //TODO: Make the right ssl engine object after setting the right parameters
-        return null;
+        SSLEngine serverEngine = sslContextInitializer.getSslc().createSSLEngine();
+        serverEngine.setUseClientMode(false);
+        serverEngine.setNeedClientAuth(false);
+        serverEngine.setEnabledProtocols(new String[] {"TLSv1"});
+        return serverEngine;
     }
 
     private String shareSecret;
@@ -66,6 +75,8 @@ public class EAPOrchestrator implements EAPMessageHandler {
         // this returned eapSink.
         eapSinkNSource = EAPStackBuilder.buildEAPOnlyStack(null, eapInPacketQueue, new TargetBoundAppProtocolContext());
         this.shareSecret = sharedSecret;
+        Path path = FileSystems.getDefault().getPath("keystore.jks");
+        sslContextInitializer = new SSLContextInitializer(path.toAbsolutePath().toString(), path.toAbsolutePath().toString(), "password");
     }
 
     private void onEAPIdentityPacketReceived(InetSocketAddress fromAddress,
@@ -73,18 +84,18 @@ public class EAPOrchestrator implements EAPMessageHandler {
                                              DatagramPacketSink datagramPacketSink) {
 
         UUID uuidRadiusState = UUID.randomUUID();
-        RadiusPacketSink radiusPacketSink = new RadiusPacketSink(uuidRadiusState.toString(), radiusRequest, shareSecret,
+        RadiusPacketSink.RadiusRequestPacketProviderImpl rrpp = new RadiusPacketSink.RadiusRequestPacketProviderImpl(radiusRequest);
+        RadiusPacketSink radiusPacketSink = new RadiusPacketSink(uuidRadiusState.toString(), rrpp, shareSecret,
                 datagramPacketSink);
 
         TargetedDataoutputStream tds = new TargetedDataoutputStream(radiusPacketSink, fromAddress);
-        StreamUtils.ByteBufferInputStream packetStream = multiplexingPacketQueue.addSourceNSinkFor(uuidRadiusState, null);
-        final TargetBoundAppProtocolContext boundAppProtocolContext = new TargetBoundAppProtocolContext();
+        StreamUtils.ByteBufferInputStream packetStream = multiplexingPacketQueue.addSourceNSinkFor(uuidRadiusState, rrpp);
+        final TargetBoundAppProtocolContext boundAppProtocolContext = new TargetBoundAppProtocolContext(256, "server", true);
         final EAPStackBuilder.ByteBufferSinkNSource ss = EAPStackBuilder.buildEAPTTLSStack(new DataOutputStream(tds), packetStream,
                 boundAppProtocolContext);
 
         final SSLEngineSocketLessHandshake.SSLByteBufferIOStream sslByteBufferIOStream =
-                new SSLEngineSocketLessHandshake.SSLByteBufferIOStream(newSSLEngine(), ss.outputStream, ss.inputStream,
-                        4096 * 4, 4096 * 4, "server");
+                new SSLEngineSocketLessHandshake.SSLByteBufferIOStream(newSSLEngine(), ss.outputStream, ss.inputStream, "server");
 
         threadPoolExecutor.submit(new Runnable() {
             @Override
@@ -106,7 +117,7 @@ public class EAPOrchestrator implements EAPMessageHandler {
         try {
             eapInPacketQueue.write(eapPacket);
             StreamUtils.PacketAndData<EAPPacket> packetAndData = eapPacketStream.readPacket();
-            if (packetAndData.packet.getCode() != 1 || packetAndData.data.limit() <= 0) {
+            if (packetAndData.packet.getCode() != 2 || packetAndData.data.limit() <= 0) {
                 // if it is not a response EAP packet or there is no data return
                 return;
             }
@@ -133,6 +144,7 @@ public class EAPOrchestrator implements EAPMessageHandler {
 
             while (!eapProcessorStopped) {
                 sslByteBufferIOStream.read();
+                System.out.println("Done with SSL handshake... exiting");
                 // TODO: once the hand-shake is done - we should forward to upstream protocol and finally send EAP SUCCESS
                 // for now we just break out.
                 break;

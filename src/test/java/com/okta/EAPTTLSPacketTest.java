@@ -307,7 +307,7 @@ public class EAPTTLSPacketTest extends TestCase {
             @Override
             public void run() {
                 try {
-                    App.testRadiusServerIntegration(serverPort);
+                    App.testRadiusServerIntegration(serverPort, App.sharedSecret);
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
@@ -316,9 +316,10 @@ public class EAPTTLSPacketTest extends TestCase {
 
         t.start();
 
-        byte[] packetData = new byte[] {1, 2, 0, 11, 1, 0, 10, 11, 12, 13, 14};
+        final int packetId = 123;
+        byte[] packetData = new byte[] {2, 2, 0, 11, 1, 0, 10, 11, 12, 13, 14};
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        RadiusPacket packet = new RadiusPacket(1, 123);
+        RadiusPacket packet = new RadiusPacket(1, packetId);
         RadiusAttribute eapAttribute = new RadiusAttribute(RadiusPacketSink.EAP_MESSAGE_ATTR, packetData);
         packet.setAttributes(Lists.newArrayList(eapAttribute));
         packet.encodeRequestPacket(bos, App.sharedSecret);
@@ -336,8 +337,18 @@ public class EAPTTLSPacketTest extends TestCase {
         RadiusPacket responseRP = RadiusPacket.decodeResponsePacket(new ByteArrayInputStream(dgReceived.getData(),
                 dgReceived.getOffset(), dgReceived.getLength()), App.sharedSecret, packet);
 
+        assertTrue(responseRP.getPacketType() == 11);
+        assertTrue(responseRP.getPacketIdentifier() == packetId);
+
         List<RadiusAttribute> eapAttrs = responseRP.getAttributes(RadiusPacketSink.EAP_MESSAGE_ATTR);
         Assert.assertTrue(eapAttrs.size() > 0);
+
+        List<RadiusAttribute> radiusAttrs = responseRP.getAttributes(RadiusPacketSink.MESSAGE_AUTHENTICATOR_ATTR);
+        Assert.assertTrue(radiusAttrs.size() > 0);
+
+        radiusAttrs = responseRP.getAttributes(RadiusPacketSink.RADIUS_STATE_ATTR);
+        Assert.assertTrue(radiusAttrs.size() > 0);
+
         StreamUtils.DataCollector eapAttrBytes = new StreamUtils.DataCollector();
         for (RadiusAttribute a : eapAttrs) {
             eapAttrBytes.write(a.getAttributeData());

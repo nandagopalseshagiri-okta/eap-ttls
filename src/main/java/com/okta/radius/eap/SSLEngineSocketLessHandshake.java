@@ -161,8 +161,7 @@ public class SSLEngineSocketLessHandshake {
 
     private ByteBuffer sslEnginePeerLoopEx(String name, SSLEngine sslEngine, ByteBuffer appData, StreamUtils.ByteBufferOutputStream outputStream,
                                    StreamUtils.ByteBufferInputStream inputStream) throws Exception {
-        SSLByteBufferIOStream sslByteBufferIOStream = new SSLByteBufferIOStream(sslEngine, outputStream, inputStream,
-                netBufferMax, appBufferMax, name);
+        SSLByteBufferIOStream sslByteBufferIOStream = new SSLByteBufferIOStream(sslEngine, outputStream, inputStream, name);
 
         ByteBuffer result = null;
         if ("server".equals(name)) {
@@ -176,6 +175,7 @@ public class SSLEngineSocketLessHandshake {
 
     public static class SSLByteBufferIOStream implements StreamUtils.ByteBufferOutputStream,
             StreamUtils.ByteBufferInputStream {
+        private static final int MAX_BUFFER_LIMIT = 16 * 1024 * 1024;
         private boolean sslHandShakeDone = false;
         private SSLEngine sslEngine;
         private StreamUtils.ByteBufferOutputStream outputStream;
@@ -186,13 +186,16 @@ public class SSLEngineSocketLessHandshake {
         private String name;
 
         public SSLByteBufferIOStream(SSLEngine se, StreamUtils.ByteBufferOutputStream outStream,
-                                     StreamUtils.ByteBufferInputStream inStream, int netBuffer, int appBuffer,
+                                     StreamUtils.ByteBufferInputStream inStream,
                                      String nameForLogging) {
             sslEngine = se;
             outputStream = outStream;
             inputStream = inStream;
-            netBufferMax = netBuffer;
-            appBufferMax = appBuffer;
+
+            SSLSession session = se.getSession();
+            appBufferMax = session.getApplicationBufferSize();
+            netBufferMax = session.getPacketBufferSize();
+
             name = nameForLogging;
         }
 
@@ -218,6 +221,18 @@ public class SSLEngineSocketLessHandshake {
             }
         }
 
+        private ByteBuffer expand(ByteBuffer existing) {
+            int newCapacity = existing.capacity() * 2;
+            if (newCapacity > MAX_BUFFER_LIMIT) {
+                throw new RuntimeException("Buffer limit cannot be expanded to - " + newCapacity);
+            }
+
+            ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
+            existing.flip();
+            newBuffer.put(existing);
+            return newBuffer;
+        }
+
         private void handshakeLoop(ByteBuffer appData, boolean dummyData) throws Exception {
             boolean dataSent = false;
 
@@ -241,6 +256,10 @@ public class SSLEngineSocketLessHandshake {
                     // we are assuming that hand-shake data and app data will not be encrypted together
                     // inside the outgoingEncBuffer in one call to wrap.
                     sslHandShakeDone = true;
+                } else if (sslEngineResult.getStatus() == SSLEngineResult.Status.BUFFER_OVERFLOW) {
+                    outgoingEncBuffer = expand(outgoingEncBuffer);
+                } else if (sslEngineResult.getStatus() != SSLEngineResult.Status.OK) {
+                    log("SSL engine wrap status is not OK " + sslEngineResult.getStatus());
                 }
 
                 outgoingEncBuffer.flip();
@@ -370,7 +389,7 @@ public class SSLEngineSocketLessHandshake {
     private void createSSLEngines() throws Exception {
         serverEngine = sslc.createSSLEngine();
         serverEngine.setUseClientMode(false);
-        serverEngine.setNeedClientAuth(true);
+        serverEngine.setNeedClientAuth(false);
 
         clientEngine = sslc.createSSLEngine("client", 80);
         clientEngine.setUseClientMode(true);

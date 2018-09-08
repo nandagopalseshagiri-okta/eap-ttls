@@ -64,7 +64,7 @@ public class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputS
     private void waitForAck() {
         StreamUtils.PacketAndData<EAPTTLSPacket> pd = ttlsPacketInputStream.readPacket();
         if (pd.data.limit() != 0) {
-            throw new TTLSProtocolException("Expected TTLS ack packet with no data - receviced data with length = " + pd.data.limit());
+            throw new TTLSProtocolException("Expected TTLS ack packet with no data - received data with length = " + pd.data.limit());
         }
 
         if (pd.packet.getFlag() != 0) {

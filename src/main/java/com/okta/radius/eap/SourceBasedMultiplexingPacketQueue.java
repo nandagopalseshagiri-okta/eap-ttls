@@ -19,24 +19,32 @@ import java.util.concurrent.ConcurrentHashMap;
  * Created by nandagopal.seshagiri on 8/28/18.
  */
 public class SourceBasedMultiplexingPacketQueue {
-    private Map<UUID, SSLEngineSocketLessHandshake.MemQueuePipe> sourceIPPortToSS = new ConcurrentHashMap<>();
+    private static class PacketQueueInfo {
+        public RadiusPacketSink.RadiusRequestPacketProvider rrpp;
+        public SSLEngineSocketLessHandshake.MemQueuePipe queuePipe;
 
-    public StreamUtils.ByteBufferInputStream addSourceNSinkFor(UUID radiusState, ByteBuffer packet) {
-        SSLEngineSocketLessHandshake.MemQueuePipe queuePipe = null;
+        public PacketQueueInfo(RadiusPacketSink.RadiusRequestPacketProvider rrpp,
+                               SSLEngineSocketLessHandshake.MemQueuePipe queuePipe) {
+            this.rrpp = rrpp;
+            this.queuePipe = queuePipe;
+        }
+    }
+
+    private Map<UUID, PacketQueueInfo> sourceIPPortToSS = new ConcurrentHashMap<>();
+
+    public StreamUtils.ByteBufferInputStream addSourceNSinkFor(UUID radiusState, RadiusPacketSink.RadiusRequestPacketProvider rrpp) {
+        PacketQueueInfo queuePipe = null;
         synchronized (this) {
-            if (sourceIPPortToSS.containsKey(radiusState)) {
-                queuePipe = sourceIPPortToSS.get(radiusState);
-            } else {
-                queuePipe = new SSLEngineSocketLessHandshake.MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(50));
+            if (!sourceIPPortToSS.containsKey(radiusState)) {
+                queuePipe = new PacketQueueInfo(rrpp,
+                        new SSLEngineSocketLessHandshake.MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(50)));
                 sourceIPPortToSS.put(radiusState, queuePipe);
+            } else {
+                queuePipe = sourceIPPortToSS.get(radiusState);
             }
         }
 
-        if (packet != null) {
-            queuePipe.write(packet);
-        }
-
-        return queuePipe;
+        return queuePipe.queuePipe;
     }
 
     public boolean routePacketIfKnownSource(RadiusPacket radiusPacket, ByteBuffer packetData) {
@@ -45,12 +53,13 @@ public class SourceBasedMultiplexingPacketQueue {
             return false;
         }
 
-        SSLEngineSocketLessHandshake.MemQueuePipe queuePipe = sourceIPPortToSS.get(stateUuid);
-        if (queuePipe == null) {
+        PacketQueueInfo queueInfo = sourceIPPortToSS.get(stateUuid);
+        if (queueInfo == null) {
             return false;
         }
 
-        queuePipe.write(packetData);
+        queueInfo.rrpp.setRequestPacket(radiusPacket);
+        queueInfo.queuePipe.write(packetData);
         return true;
     }
 
