@@ -30,7 +30,6 @@ public class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputS
             maxFragmentSize = 512;
         }
 
-        appProtocolContext.incrementPacketId();
         int remainingLen = byteBuffer.limit();
         for (int i = 0; i < byteBuffer.limit(); i += maxFragmentSize) {
             appProtocolContext.resetFlags();
@@ -49,6 +48,7 @@ public class TTLSByteBufferOutputStream implements StreamUtils.ByteBufferOutputS
 
     private int transmitFragment(byte[] array, int offset, int length, boolean transmittingFragment) {
         try {
+            appProtocolContext.incrementPacketId();
             System.out.println("Writing packet size = " + length + " as fragment = " + transmittingFragment);
             eapttlsOutStream.write(array, offset, length);
             eapttlsOutStream.flush();

@@ -6,13 +6,11 @@ import org.tinyradius.packet.RadiusPacket;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
 import java.util.Arrays;
 
 /**
@@ -21,7 +19,7 @@ import java.util.Arrays;
 public class RadiusPacketSink implements DatagramPacketSink {
     private String radiusStateValue;
     private DatagramPacketSink lowerLevelSink;
-    private RadiusRequestPacketProvider radiusRequestPacketProvider;
+    private SSLEngineSocketLessHandshake.RadiusRequestPacketProvider radiusRequestPacketProvider;
     private String shareSecret;
 
     private static final int MAX_ATTR_LEN = 253;
@@ -31,12 +29,7 @@ public class RadiusPacketSink implements DatagramPacketSink {
     public static final int RADIUS_STATE_ATTR = 24;
     public static final int MESSAGE_AUTHENTICATOR_ATTR = 80;
 
-    public interface RadiusRequestPacketProvider {
-        RadiusPacket getRequestPacket();
-        void setRequestPacket(RadiusPacket packet);
-    }
-
-    public static class RadiusRequestPacketProviderImpl implements RadiusRequestPacketProvider {
+    public static class RadiusRequestPacketProviderImpl implements SSLEngineSocketLessHandshake.RadiusRequestPacketProvider {
         private RadiusPacket radiusPacket;
 
         public RadiusRequestPacketProviderImpl(RadiusPacket startingRadiusPacket) {
@@ -54,7 +47,7 @@ public class RadiusPacketSink implements DatagramPacketSink {
         }
     }
 
-    public RadiusPacketSink(String radiusState, RadiusRequestPacketProvider rrpp, String sharedSecret,
+    public RadiusPacketSink(String radiusState, SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp, String sharedSecret,
                             DatagramPacketSink lowerSink) {
         this.radiusStateValue = radiusState;
         this.lowerLevelSink = lowerSink;
@@ -93,6 +86,8 @@ public class RadiusPacketSink implements DatagramPacketSink {
         DatagramPacket wrapper = new DatagramPacket(bos.getBytes(), 0, bos.getCount(), packet.getSocketAddress());
 
         lowerLevelSink.send(wrapper);
+        System.out.println("###### Sending RADIUS packet out with id = " + radiusPacket.getPacketIdentifier()
+                + " size = " + packet.getLength());
     }
 
     private static boolean addEAPAttr(int attrType, DatagramPacket packet, int offset, RadiusPacket radiusPacket) {

@@ -7,6 +7,7 @@ import com.okta.radius.eap.EAPPacket;
 import com.okta.radius.eap.EAPStackBuilder;
 import com.okta.radius.eap.EAPTTLSPacket;
 import com.okta.radius.eap.LogHelper;
+import com.okta.radius.eap.RequestMatcher;
 import org.tinyradius.attribute.RadiusAttribute;
 import org.tinyradius.packet.RadiusPacket;
 import org.tinyradius.util.RadiusServer;
@@ -21,6 +22,7 @@ import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static com.okta.radius.eap.EAPTTLSPacket.makeWrappedOutputStream;
 
@@ -74,6 +76,8 @@ public class App
         return buffer;
     }
 
+    public static RequestMatcher requestMatcher = new RequestMatcher(25, 30, TimeUnit.SECONDS);
+
     public static void testRadiusServerIntegration(int port, String sharedSecret) throws Exception {
         final DatagramSocket socket = new DatagramSocket(port);
         EAPStackBuilder.UdpByteBufferStream readStream = new EAPStackBuilder.UdpByteBufferStream(socket);
@@ -94,7 +98,13 @@ public class App
                 actualPacketType = dp.getData()[0];
                 dp.getData()[0] = 2;
             }
+
             RadiusPacket packet = rs.fromDatagram(dp);
+            if (requestMatcher.checkIfDuplicateOrRegisterPacket(packet, (InetSocketAddress) dp.getSocketAddress())) {
+                System.out.println("Ignoring duplicate packet received id=" + packet.getPacketIdentifier());
+                continue;
+            }
+
             List<RadiusAttribute> attrs = packet.getAttributes(79);
             if (attrs.isEmpty()) {
                 System.out.println("No EAP message in the RADIUS packet - ignoring packet");

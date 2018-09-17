@@ -1,5 +1,7 @@
 package com.okta.radius.eap;
 
+import org.tinyradius.packet.RadiusPacket;
+
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
@@ -7,6 +9,7 @@ import javax.net.ssl.SSLSession;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
@@ -16,6 +19,33 @@ import static com.okta.radius.eap.TargetBoundAppProtocolContext.makeAppProtocolC
  * Created by nandagopal.seshagiri on 8/10/18.
  */
 public class SSLEngineSocketLessHandshake {
+
+    public static class Pair<A, B> {
+        public final A fst;
+        public final B snd;
+
+        public Pair(A var1, B var2) {
+            this.fst = var1;
+            this.snd = var2;
+        }
+
+        public String toString() {
+            return "Pair[" + this.fst + "," + this.snd + "]";
+        }
+
+        public boolean equals(Object var1) {
+            return var1 instanceof Pair && Objects.equals(this.fst, ((Pair)var1).fst) && Objects.equals(this.snd, ((Pair)var1).snd);
+        }
+
+        public int hashCode() {
+            return this.fst == null?(this.snd == null?0:this.snd.hashCode() + 1):(this.snd == null?this.fst.hashCode() + 2:this.fst.hashCode() * 17 + this.snd.hashCode());
+        }
+
+        public static <A, B> Pair<A, B> of(A var0, B var1) {
+            return new Pair(var0, var1);
+        }
+    }
+
 
     private static boolean logging = true;
 
@@ -40,17 +70,29 @@ public class SSLEngineSocketLessHandshake {
 
     private SSLContextInitializer sslContextInitializer;
 
+    public interface RadiusRequestPacketProvider {
+        RadiusPacket getRequestPacket();
+        void setRequestPacket(RadiusPacket packet);
+    }
+
     public static class MemQueuePipe implements StreamUtils.ByteBufferOutputStream, StreamUtils.ByteBufferInputStream {
 
-        private BlockingQueue<ByteBuffer> byteBufferBlockingQueue;
+        private BlockingQueue<Pair<ByteBuffer,RadiusPacket>> byteBufferBlockingQueue;
 
-        public MemQueuePipe(BlockingQueue<ByteBuffer> queue) {
-            byteBufferBlockingQueue = queue;
+        private RadiusRequestPacketProvider radiusRequestPacketProvider;
+
+        public MemQueuePipe() {
+            byteBufferBlockingQueue = new ArrayBlockingQueue<>(50);
         }
 
         public ByteBuffer read() {
             try {
-                ByteBuffer buffer = byteBufferBlockingQueue.take();
+                Pair<ByteBuffer, RadiusPacket> packetPair = byteBufferBlockingQueue.take();
+                if (radiusRequestPacketProvider != null) {
+                    radiusRequestPacketProvider.setRequestPacket(packetPair.snd);
+                }
+
+                ByteBuffer buffer = packetPair.fst;
                 buffer.flip();
                 return buffer;
             } catch (InterruptedException e) {
@@ -59,15 +101,23 @@ public class SSLEngineSocketLessHandshake {
         }
 
         public void write(ByteBuffer byteBuffer) {
+            write(byteBuffer, null);
+        }
+
+        public void write(ByteBuffer byteBuffer, RadiusPacket radiusPacket) {
             // Assume a flipped ByteBuffer
             ByteBuffer buffer = clone(byteBuffer);
-            byteBufferBlockingQueue.add(buffer);
+            byteBufferBlockingQueue.add(new Pair<>(buffer, radiusPacket));
         }
 
         public static ByteBuffer clone(ByteBuffer original) {
             ByteBuffer clone = ByteBuffer.allocate(original.limit());
             clone.put(original.array(), 0, original.limit());
             return clone;
+        }
+
+        void setRadiusRequestPacketProvider(RadiusRequestPacketProvider rrpp) {
+            radiusRequestPacketProvider = rrpp;
         }
     }
 
@@ -135,22 +185,27 @@ public class SSLEngineSocketLessHandshake {
             }
 
             if (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NEED_UNWRAP) {
-                log("---- " + name + " Read start -----");
-                ByteBuffer peerData = inputStream.read();
-                if (peerData == null) {
-                    log("Input stream returned a null byte buffer");
-                    break;
+                if (!unwrapBuffer.hasRemaining()) {
+                    log("---- " + name + " Read start -----");
+                    ByteBuffer peerData = inputStream.read();
+                    if (peerData == null) {
+                        log("Input stream returned a null byte buffer");
+                        break;
+                    }
+
+                    log(name + ": read buffer with limit=" + peerData.limit());
+
+                    unwrapBuffer.put(peerData);
+                    unwrapBuffer.flip();
                 }
-
-                unwrapBuffer.put(peerData);
-                unwrapBuffer.flip();
-
-                log(name + ": read buffer with limit=" + peerData.limit());
 
                 sslEngineResult = sslEngine.unwrap(unwrapBuffer, incomingPlainBuffer);
                 log(name + " unwrap: ", sslEngineResult);
                 runDelegatedTasks(sslEngineResult, sslEngine);
-                unwrapBuffer.compact();
+                log ("unwrapBuffer position/limit = " + unwrapBuffer.position() + "/" + unwrapBuffer.limit());
+                if (!unwrapBuffer.hasRemaining()) {
+                    unwrapBuffer.compact();
+                }
             }
 
             if (dataSent) {
@@ -184,6 +239,7 @@ public class SSLEngineSocketLessHandshake {
         private int netBufferMax = 4096;
         private int appBufferMax = 4096;
         private String name;
+        private boolean hasUnreadData = false;
 
         public SSLByteBufferIOStream(SSLEngine se, StreamUtils.ByteBufferOutputStream outStream,
                                      StreamUtils.ByteBufferInputStream inStream,
@@ -262,17 +318,28 @@ public class SSLEngineSocketLessHandshake {
                     log("SSL engine wrap status is not OK " + sslEngineResult.getStatus());
                 }
 
-                outgoingEncBuffer.flip();
-                if (outgoingEncBuffer.limit() <= 0) {
-                    log(name + " Writing outgoingEncBuffer with sub zero length=" + outgoingEncBuffer.limit());
+                if (outgoingEncBuffer.position() <= 0) {
+                    log(name + " Writing outgoingEncBuffer with sub zero length=" + outgoingEncBuffer.position());
                 } else {
                     if (sslHandShakeDone && dummyData) {
                         break;
                     }
-                    outputStream.write(outgoingEncBuffer);
-                }
+                    if (sslHandShakeDone || (!hasUnreadData &&
+                            sslEngineResult.getHandshakeStatus() != SSLEngineResult.HandshakeStatus.NEED_WRAP)) {
+                        // Explaining here when do not want to write to output stream,
+                        // If there is unread data from last unwrap then we should wait and consume it before
+                        // sending out wrapped output because there could be more wrapped data after we consume
+                        // the data from remote peer via next unwrap call.
+                        // Or, if the handshake result comes out as NEED_WRAP - loop and call wrap again to get more
+                        // data before sending out the partial data.
 
-                outgoingEncBuffer.clear();
+                        // If we are done with handshaking don't look at anything - just send the output buffer from
+                        // wrap
+                        outgoingEncBuffer.flip();
+                        outputStream.write(outgoingEncBuffer);
+                        outgoingEncBuffer.clear();
+                    }
+                }
 
                 if (sslEngineResult.bytesConsumed() >= appData.limit()) {
                     dataSent = true;
@@ -280,9 +347,12 @@ public class SSLEngineSocketLessHandshake {
                 }
 
                 if (sslEngineResult.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NEED_UNWRAP) {
-                    log("---- " + name + " Read start -----");
                     unwrap(unwrapBuffer);
-                    unwrapBuffer.compact();
+                    if (!hasUnreadData) {
+                        unwrapBuffer.clear();
+                    } else {
+                        log("not all the data was unwrapped - so will skip read until all is read. remaining = " + unwrapBuffer.remaining());
+                    }
                 }
 
                 if (dataSent) {
@@ -292,19 +362,24 @@ public class SSLEngineSocketLessHandshake {
         }
 
         private ByteBuffer unwrap(ByteBuffer unwrapBuffer) throws Exception {
-            ByteBuffer peerData = inputStream.read();
-            if (peerData == null) {
-                log("Input stream returned a null byte buffer");
-                return null;
+            if (!hasUnreadData) {
+                log("---- " + name + " Read start -----");
+                ByteBuffer peerData = inputStream.read();
+                if (peerData == null) {
+                    log("Input stream returned a null byte buffer");
+                    return null;
+                }
+
+                unwrapBuffer.put(peerData);
+                unwrapBuffer.flip();
+
+                log(name + ": read buffer with limit=" + peerData.limit());
             }
 
-            unwrapBuffer.put(peerData);
-            unwrapBuffer.flip();
-
-            log(name + ": read buffer with limit=" + peerData.limit());
-
             ByteBuffer incomingPlainBuffer = ByteBuffer.allocate(appBufferMax + 50);
+            int totalBytes = unwrapBuffer.limit() - unwrapBuffer.position();
             SSLEngineResult sslEngineResult = sslEngine.unwrap(unwrapBuffer, incomingPlainBuffer);
+            hasUnreadData = totalBytes > sslEngineResult.bytesConsumed();
             log(name + " unwrap: ", sslEngineResult);
             runDelegatedTasks(sslEngineResult, sslEngine);
 
@@ -313,11 +388,11 @@ public class SSLEngineSocketLessHandshake {
     }
 
     private void createOutputStreams() {
-        MemQueuePipe clientOutServerIn = new MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(16));
+        MemQueuePipe clientOutServerIn = new MemQueuePipe();
         clientOutstream = clientOutServerIn;
         serverInStream = clientOutServerIn;
 
-        MemQueuePipe clientInServerOut = new MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(16));
+        MemQueuePipe clientInServerOut = new MemQueuePipe();
         clientInStream = clientInServerOut;
         serverOutStream = clientInServerOut;
     }

@@ -4,15 +4,10 @@ import com.google.common.base.Charsets;
 import org.tinyradius.attribute.RadiusAttribute;
 import org.tinyradius.packet.RadiusPacket;
 
-import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -20,24 +15,25 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SourceBasedMultiplexingPacketQueue {
     private static class PacketQueueInfo {
-        public RadiusPacketSink.RadiusRequestPacketProvider rrpp;
+        public SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp;
         public SSLEngineSocketLessHandshake.MemQueuePipe queuePipe;
 
-        public PacketQueueInfo(RadiusPacketSink.RadiusRequestPacketProvider rrpp,
+        public PacketQueueInfo(SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp,
                                SSLEngineSocketLessHandshake.MemQueuePipe queuePipe) {
             this.rrpp = rrpp;
             this.queuePipe = queuePipe;
+            this.queuePipe.setRadiusRequestPacketProvider(rrpp);
         }
     }
 
     private Map<UUID, PacketQueueInfo> sourceIPPortToSS = new ConcurrentHashMap<>();
 
-    public StreamUtils.ByteBufferInputStream addSourceNSinkFor(UUID radiusState, RadiusPacketSink.RadiusRequestPacketProvider rrpp) {
+    public StreamUtils.ByteBufferInputStream addSourceNSinkFor(UUID radiusState, SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp) {
         PacketQueueInfo queuePipe = null;
         synchronized (this) {
             if (!sourceIPPortToSS.containsKey(radiusState)) {
                 queuePipe = new PacketQueueInfo(rrpp,
-                        new SSLEngineSocketLessHandshake.MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(50)));
+                        new SSLEngineSocketLessHandshake.MemQueuePipe());
                 sourceIPPortToSS.put(radiusState, queuePipe);
             } else {
                 queuePipe = sourceIPPortToSS.get(radiusState);
@@ -58,8 +54,7 @@ public class SourceBasedMultiplexingPacketQueue {
             return false;
         }
 
-        queueInfo.rrpp.setRequestPacket(radiusPacket);
-        queueInfo.queuePipe.write(packetData);
+        queueInfo.queuePipe.write(packetData, radiusPacket);
         return true;
     }
 

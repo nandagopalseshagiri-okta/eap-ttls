@@ -45,7 +45,7 @@ public class EAPOrchestrator implements EAPMessageHandler {
         }
     }
     private SSLEngineSocketLessHandshake.MemQueuePipe eapInPacketQueue =
-            new SSLEngineSocketLessHandshake.MemQueuePipe(new ArrayBlockingQueue<ByteBuffer>(50));
+            new SSLEngineSocketLessHandshake.MemQueuePipe();
 
     private EAPStackBuilder.ByteBufferSinkNSource eapSinkNSource;
 

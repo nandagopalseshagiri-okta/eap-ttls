@@ -88,6 +88,7 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
     public void incrementPacketId() {
         if (isServerMode) {
             ++ttlsId;
+            log("****** incremented packet id to " + ttlsId);
         }
     }
 }
