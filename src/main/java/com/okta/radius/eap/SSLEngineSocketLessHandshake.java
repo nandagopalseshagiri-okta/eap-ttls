@@ -6,6 +6,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLSession;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -277,7 +278,7 @@ public class SSLEngineSocketLessHandshake {
             }
         }
 
-        private ByteBuffer expand(ByteBuffer existing) {
+        public static ByteBuffer expand(ByteBuffer existing) {
             int newCapacity = existing.capacity() * 2;
             if (newCapacity > MAX_BUFFER_LIMIT) {
                 throw new RuntimeException("Buffer limit cannot be expanded to - " + newCapacity);
@@ -326,7 +327,7 @@ public class SSLEngineSocketLessHandshake {
                     }
                     if (sslHandShakeDone || (!hasUnreadData &&
                             sslEngineResult.getHandshakeStatus() != SSLEngineResult.HandshakeStatus.NEED_WRAP)) {
-                        // Explaining here when do not want to write to output stream,
+                        // Explaining here when we do not want to write to output stream,
                         // If there is unread data from last unwrap then we should wait and consume it before
                         // sending out wrapped output because there could be more wrapped data after we consume
                         // the data from remote peer via next unwrap call.
@@ -397,12 +398,18 @@ public class SSLEngineSocketLessHandshake {
         serverOutStream = clientInServerOut;
     }
 
+    private static final int port = 2005;
+
+    private DatagramSocket socket;
+    private TLSTransceiver tlsTransceiver;
+    private EAPStackBuilder.UdpByteBufferStream readStream;
+
     private void createUdpOutputStreams() {
         try {
-            final int port = 2002;
             AppProtocolContext contextServer = makeAppProtocolContext(256, "Server", true);
             AppProtocolContext contextClient = makeAppProtocolContext(256, "Client", false);
-            EAPStackBuilder.ByteBufferSinkNSource server = EAPStackBuilder.makeUdpReadWritePair(port, contextServer);
+            socket = new DatagramSocket(port);
+            EAPStackBuilder.ByteBufferSinkNSource server = EAPStackBuilder.makeUdpReadWritePair(socket, contextServer);
             EAPStackBuilder.ByteBufferSinkNSource client = EAPStackBuilder.makeUdpReadWritePair(port, InetAddress.getByName("127.0.0.1"),
                     contextClient);
             clientOutstream = client.outputStream;
@@ -415,6 +422,39 @@ public class SSLEngineSocketLessHandshake {
         }
     }
 
+    private ByteBufferReceiver createTransceivers(ByteBufferReceiver finalReceiver) {
+        try {
+            // make sure createUdpOutputStreams - is called before this - as this depends on socket
+            // being initialized.
+            AppProtocolContext contextServer = makeAppProtocolContext(256, "Server", true);
+            readStream = new EAPStackBuilder.UdpByteBufferStream(socket);
+            EAPStackBuilder.UdpFlusher udpFlusher = new EAPStackBuilder.UdpFlusher(socket, readStream);
+            tlsTransceiver = new TLSTransceiver(serverEngine, "server", null, finalReceiver);
+            EAPTTLSTransceiver eapttlsTransceiver = new EAPTTLSTransceiver(contextServer, tlsTransceiver, udpFlusher);
+            tlsTransceiver.chain((ByteBufferTransmitter) eapttlsTransceiver);
+            return eapttlsTransceiver;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void runServer(ByteBufferReceiver eapttls) {
+        final boolean[] condition = new boolean[] {true};
+        tlsTransceiver.chain(new ByteBufferReceiver() {
+            @Override
+            public void receive(ByteBuffer buffer) {
+                assertTrue(Arrays.equals(clientOut.array(), Arrays.copyOfRange(buffer.array(), 0, buffer.limit())));
+                log("Received app data");
+                condition[0] = false;
+            }
+        });
+        while (condition[0]) {
+            ByteBuffer bb = readStream.read();
+            System.out.println("Server read data length = " + bb.remaining());
+            eapttls.receive(bb);
+        }
+    }
+
     private void performSocketLessSSL() throws Exception {
         createSSLEngines();
         createBuffers();
@@ -422,6 +462,8 @@ public class SSLEngineSocketLessHandshake {
         //logging = false;
         //createOutputStreams();
         createUdpOutputStreams();
+
+        final ByteBufferReceiver eapttlsReceiver = createTransceivers(null);
 
         Thread client = new Thread(new Runnable() {
             public void run() {
@@ -436,9 +478,10 @@ public class SSLEngineSocketLessHandshake {
         Thread server = new Thread(new Runnable() {
             public void run() {
                 try {
-                    ByteBuffer buffer = sslEnginePeerLoopEx("server", serverEngine, serverOut, serverOutStream, serverInStream);
-                    buffer.flip();
-                    assertTrue(Arrays.equals(clientOut.array(), Arrays.copyOfRange(buffer.array(), 0, buffer.limit())));
+                    runServer(eapttlsReceiver);
+//                    ByteBuffer buffer = sslEnginePeerLoopEx("server", serverEngine, serverOut, serverOutStream, serverInStream);
+//                    buffer.flip();
+//                    assertTrue(Arrays.equals(clientOut.array(), Arrays.copyOfRange(buffer.array(), 0, buffer.limit())));
                 } catch (Exception e) {
                     log("server side exception = " + e);
                 }
@@ -479,7 +522,7 @@ public class SSLEngineSocketLessHandshake {
         serverOut = ByteBuffer.wrap("b".getBytes());
     }
 
-    private static void runDelegatedTasks(SSLEngineResult result,
+    public static SSLEngineResult.HandshakeStatus runDelegatedTasks(SSLEngineResult result,
                                           SSLEngine engine) throws Exception {
 
         if (result.getHandshakeStatus() == SSLEngineResult.HandshakeStatus.NEED_TASK) {
@@ -494,14 +537,17 @@ public class SSLEngineSocketLessHandshake {
                         "handshake shouldn't need additional tasks");
             }
             log("   new HandshakeStatus: " + hsStatus);
+            return hsStatus;
         }
+
+        return result.getHandshakeStatus();
     }
 
-    private static boolean isEngineClosed(SSLEngine engine) {
+    public static boolean isEngineClosed(SSLEngine engine) {
         return (engine.isOutboundDone() && engine.isInboundDone());
     }
 
-    private static void log(String str, SSLEngineResult result) {
+    public static void log(String str, SSLEngineResult result) {
         if (!logging) {
             return;
         }
@@ -516,7 +562,7 @@ public class SSLEngineSocketLessHandshake {
         }
     }
 
-    private static void log(String str) {
+    public static void log(String str) {
         if (logging) {
             System.out.println(str);
         }

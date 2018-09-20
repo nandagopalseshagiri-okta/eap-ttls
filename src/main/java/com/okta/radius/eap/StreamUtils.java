@@ -57,7 +57,10 @@ public class StreamUtils {
         }
 
         public StreamUtils.PacketAndData<T> readPacket() {
-            ByteBuffer eapTTLSData = lowerLayerStream.read();
+            return fromByteBuffer(lowerLayerStream.read());
+        }
+
+        public StreamUtils.PacketAndData<T> fromByteBuffer(ByteBuffer eapTTLSData) {
             StreamUtils.DataCollector bos = new StreamUtils.DataCollector();
             StreamUtils.PacketAndData<T> pd = new StreamUtils.PacketAndData<T>();
             pd.packet = createPacketFromStream(new DataInputStream(new ByteArrayInputStream(eapTTLSData.array(), 0, eapTTLSData.limit())), bos);

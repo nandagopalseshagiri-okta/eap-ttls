@@ -67,7 +67,7 @@ public class EAPStackBuilder {
         int getTargetPort();
     }
 
-    public static class UdpFlusher extends ByteArrayOutputStream {
+    public static class UdpFlusher extends ByteArrayOutputStream implements ByteBufferTransmitter {
         private DatagramSocket udpSocket;
         TargetAddressProvider targetAddressProvider;
 
@@ -84,6 +84,18 @@ public class EAPStackBuilder {
             System.out.println("Sending packet with sha1 = " + datagramSha1(dg) + " size=" + this.count);
             udpSocket.send(dg);
             this.reset();
+        }
+
+        @Override
+        public void transmit(ByteBuffer byteBuffer) {
+            try {
+                DatagramPacket dg = new DatagramPacket(byteBuffer.array(), byteBuffer.position(), byteBuffer.remaining(),
+                        targetAddressProvider.getTargetIP(), targetAddressProvider.getTargetPort());
+                System.out.println("Sending packet with sha1 = " + datagramSha1(dg) + " size=" + byteBuffer.remaining());
+                udpSocket.send(dg);
+            } catch (IOException e) {
+                throw new RuntimeException("Udp transmitter failed with exception", e);
+            }
         }
     }
 
@@ -185,7 +197,14 @@ public class EAPStackBuilder {
 
     public static ByteBufferSinkNSource makeUdpReadWritePair(int port, AppProtocolContext context) {
         try {
-            DatagramSocket socket = new DatagramSocket(port);
+            return makeUdpReadWritePair(new DatagramSocket(port), context);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public static ByteBufferSinkNSource makeUdpReadWritePair(DatagramSocket socket, AppProtocolContext context) {
+        try {
             UdpByteBufferStream readStream = new UdpByteBufferStream(socket);
             UdpFlusher writeStream = new UdpFlusher(socket, readStream);
             return buildEAPTTLSStack(new DataOutputStream(writeStream), readStream, context);
