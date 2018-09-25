@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -65,6 +66,10 @@ public class EAPStackBuilder {
     public interface TargetAddressProvider {
         InetAddress getTargetIP();
         int getTargetPort();
+    }
+
+    public interface TargetAddressSetter {
+        void setTargetAddress(InetSocketAddress address);
     }
 
     public static class UdpFlusher extends ByteArrayOutputStream implements ByteBufferTransmitter {

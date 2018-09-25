@@ -16,6 +16,9 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
 
     private boolean isServerMode;
 
+    private boolean radiusAccept = false;
+    private boolean eapSuccess = false;
+
     public TargetBoundAppProtocolContext(int mtu, String name, boolean isServerMode) {
         this.mtu = mtu;
         this.name = name;
@@ -35,7 +38,7 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
 
     public EAPTTLSPacket makeEAPTTLSPacket() {
         EAPTTLSPacket packet = new EAPTTLSPacket();
-        packet.setCode(isServerMode ? 1 : 2);
+        packet.setCode(eapSuccess ? 3 : (isServerMode ? 1 : 2));
         packet.setIdentifier(ttlsId & 0x000000FF);
         packet.setFlag(flag);
         packet.setType(21); // 21 is for EAP-TTLS
@@ -90,5 +93,20 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
             ++ttlsId;
             log("****** incremented packet id to " + ttlsId);
         }
+    }
+
+    @Override
+    public void setRadiusAccept(boolean radiusAccept) {
+        this.radiusAccept = radiusAccept;
+    }
+
+    @Override
+    public void setEapSuccess(boolean eapSuccess) {
+        this.eapSuccess = eapSuccess;
+    }
+
+    @Override
+    public boolean getRadiusAccept() {
+        return radiusAccept;
     }
 }

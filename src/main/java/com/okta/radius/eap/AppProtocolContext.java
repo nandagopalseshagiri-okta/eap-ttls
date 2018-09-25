@@ -13,4 +13,7 @@ public interface AppProtocolContext {
     int getNetworkMTU();
     void latchToIncomingPacketIdentifier(int packetId);
     void incrementPacketId();
+    void setRadiusAccept(boolean radiusAccept);
+    void setEapSuccess(boolean eapSuccess);
+    boolean getRadiusAccept();
 }

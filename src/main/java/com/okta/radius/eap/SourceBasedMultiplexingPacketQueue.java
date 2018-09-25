@@ -4,6 +4,7 @@ import com.google.common.base.Charsets;
 import org.tinyradius.attribute.RadiusAttribute;
 import org.tinyradius.packet.RadiusPacket;
 
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
@@ -15,20 +16,26 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SourceBasedMultiplexingPacketQueue {
     private static class PacketQueueInfo {
-        public SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp;
+        public SSLEngineSocketLessHandshake.RadiusRequestInfoProvider rrpp;
         public SSLEngineSocketLessHandshake.MemQueuePipe queuePipe;
 
-        public PacketQueueInfo(SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp,
+        public PacketQueueInfo(SSLEngineSocketLessHandshake.RadiusRequestInfoProvider rrpp,
                                SSLEngineSocketLessHandshake.MemQueuePipe queuePipe) {
             this.rrpp = rrpp;
             this.queuePipe = queuePipe;
-            this.queuePipe.setRadiusRequestPacketProvider(rrpp);
+            this.queuePipe.setRadiusRequestInfoProvider(rrpp);
+        }
+
+        public void forwardPacket(InetSocketAddress fromAddress, RadiusPacket radiusPacket, ByteBuffer packetData) {
+            rrpp.setRequestPacket(radiusPacket);
+            rrpp.setTargetAddress(fromAddress);
+            rrpp.receive(packetData);
         }
     }
 
     private Map<UUID, PacketQueueInfo> sourceIPPortToSS = new ConcurrentHashMap<>();
 
-    public StreamUtils.ByteBufferInputStream addSourceNSinkFor(UUID radiusState, SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp) {
+    public StreamUtils.ByteBufferInputStream addSourceNSinkFor(UUID radiusState, SSLEngineSocketLessHandshake.RadiusRequestInfoProvider rrpp) {
         PacketQueueInfo queuePipe = null;
         synchronized (this) {
             if (!sourceIPPortToSS.containsKey(radiusState)) {
@@ -44,6 +51,10 @@ public class SourceBasedMultiplexingPacketQueue {
     }
 
     public boolean routePacketIfKnownSource(RadiusPacket radiusPacket, ByteBuffer packetData) {
+        return routePacketIfKnownSource(null, radiusPacket, packetData);
+    }
+
+    public boolean routePacketIfKnownSource(InetSocketAddress fromAddress, RadiusPacket radiusPacket, ByteBuffer packetData) {
         UUID stateUuid = fromRadiusPacketState(radiusPacket);
         if (stateUuid == null) {
             return false;
@@ -54,7 +65,11 @@ public class SourceBasedMultiplexingPacketQueue {
             return false;
         }
 
-        queueInfo.queuePipe.write(packetData, radiusPacket);
+        if (fromAddress == null) {
+            queueInfo.queuePipe.write(packetData, radiusPacket);
+        } else {
+            queueInfo.forwardPacket(fromAddress, radiusPacket, packetData);
+        }
         return true;
     }
 

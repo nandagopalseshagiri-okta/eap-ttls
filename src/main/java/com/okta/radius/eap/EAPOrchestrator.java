@@ -3,7 +3,6 @@ package com.okta.radius.eap;
 import org.tinyradius.packet.RadiusPacket;
 
 import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLSession;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -13,7 +12,6 @@ import java.nio.ByteBuffer;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 
@@ -84,13 +82,14 @@ public class EAPOrchestrator implements EAPMessageHandler {
                                              DatagramPacketSink datagramPacketSink) {
 
         UUID uuidRadiusState = UUID.randomUUID();
-        RadiusPacketSink.RadiusRequestPacketProviderImpl rrpp = new RadiusPacketSink.RadiusRequestPacketProviderImpl(radiusRequest);
+        final TargetBoundAppProtocolContext boundAppProtocolContext = new TargetBoundAppProtocolContext(256, "server", true);
+        RadiusPacketSink.RadiusRequestInfoProviderImpl rrpp = new RadiusPacketSink.RadiusRequestInfoProviderImpl(radiusRequest);
         RadiusPacketSink radiusPacketSink = new RadiusPacketSink(uuidRadiusState.toString(), rrpp, shareSecret,
-                datagramPacketSink);
+                datagramPacketSink, boundAppProtocolContext);
 
         TargetedDataoutputStream tds = new TargetedDataoutputStream(radiusPacketSink, fromAddress);
         StreamUtils.ByteBufferInputStream packetStream = multiplexingPacketQueue.addSourceNSinkFor(uuidRadiusState, rrpp);
-        final TargetBoundAppProtocolContext boundAppProtocolContext = new TargetBoundAppProtocolContext(256, "server", true);
+
         final EAPStackBuilder.ByteBufferSinkNSource ss = EAPStackBuilder.buildEAPTTLSStack(new DataOutputStream(tds), packetStream,
                 boundAppProtocolContext);
 
@@ -106,10 +105,42 @@ public class EAPOrchestrator implements EAPMessageHandler {
         });
     }
 
+    private void onEAPIdentityPacketReceivedEx(InetSocketAddress fromAddress,
+                                             RadiusPacket radiusRequest,
+                                             DatagramPacketSink datagramPacketSink) {
+        UUID uuidRadiusState = UUID.randomUUID();
+        final TargetBoundAppProtocolContext contextServer = new TargetBoundAppProtocolContext(256, "server", true);
+        RadiusPacketSink.RadiusRequestInfoProviderImpl rrpp = new RadiusPacketSink.RadiusRequestInfoProviderImpl(radiusRequest);
+        RadiusPacketSink radiusPacketSink = new RadiusPacketSink(uuidRadiusState.toString(), rrpp, shareSecret,
+                datagramPacketSink, contextServer);
+
+        TargetBoundedTransmitter targetBoundedTransmitter = new TargetBoundedTransmitter(rrpp, radiusPacketSink);
+
+        TLSTransceiver tlsTransceiver = new TLSTransceiver(newSSLEngine(), "server", null, null);
+        EAPTTLSTransceiver eapttlsTransceiver = new EAPTTLSTransceiver(contextServer, tlsTransceiver, targetBoundedTransmitter);
+        tlsTransceiver.chain((ByteBufferTransmitter) eapttlsTransceiver);
+
+        rrpp.chain(eapttlsTransceiver);
+
+        multiplexingPacketQueue.addSourceNSinkFor(uuidRadiusState, rrpp);
+
+        rrpp.setRequestPacket(radiusRequest);
+        rrpp.setTargetAddress(fromAddress);
+
+        RadiusAttributeReceiver radiusAttributeReceiver = new RadiusAttributeReceiver(contextServer);
+
+        tlsTransceiver.chain(radiusAttributeReceiver);
+
+        contextServer.setStartFlag();
+        // not writing any data - just EAP TTLS packet indicating start of TTLS
+        eapttlsTransceiver.transmitEmptyEAPPacket();
+        contextServer.resetFlags();
+    }
+
     @Override
     public void handleEAPMessage(InetSocketAddress fromAddress, ByteBuffer eapPacket,
                                  DatagramPacketSink datagramPacketSink, RadiusPacket radiusPacket) {
-        if (multiplexingPacketQueue.routePacketIfKnownSource(radiusPacket, eapPacket)) {
+        if (multiplexingPacketQueue.routePacketIfKnownSource(fromAddress, radiusPacket, eapPacket)) {
             return;
         }
 
@@ -127,7 +158,7 @@ public class EAPOrchestrator implements EAPMessageHandler {
                 return;
             }
 
-            onEAPIdentityPacketReceived(fromAddress, radiusPacket, datagramPacketSink);
+            onEAPIdentityPacketReceivedEx(fromAddress, radiusPacket, datagramPacketSink);
         } catch (InvalidEAPPacketException e) {
             // ignore invalid eap packets.
         }

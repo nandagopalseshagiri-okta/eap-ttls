@@ -131,6 +131,12 @@ public class EAPTTLSTransceiver implements ByteBufferReceiver, ByteBufferTransmi
         }
     }
 
+    // Expect the caller to have set the right flags in the context to ensure that packet with
+    // right flags go out.
+    public void transmitEmptyEAPPacket() {
+        writeAckPacket();
+    }
+
     private void writeAckPacket() {
         try {
             eapTtlsOutputStream.flush();

@@ -100,6 +100,21 @@ public class EAPTTLSPacketTest extends TestCase {
             @Override
             public void incrementPacketId() {
             }
+
+            @Override
+            public void setRadiusAccept(boolean radiusAccept) {
+
+            }
+
+            @Override
+            public void setEapSuccess(boolean eapSuccess) {
+
+            }
+
+            @Override
+            public boolean getRadiusAccept() {
+                return false;
+            }
         };
 
         StreamUtils.DataCollector dc = new StreamUtils.DataCollector();

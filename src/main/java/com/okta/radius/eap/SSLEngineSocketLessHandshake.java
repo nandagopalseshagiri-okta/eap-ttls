@@ -71,7 +71,8 @@ public class SSLEngineSocketLessHandshake {
 
     private SSLContextInitializer sslContextInitializer;
 
-    public interface RadiusRequestPacketProvider {
+    public interface RadiusRequestInfoProvider extends EAPStackBuilder.TargetAddressProvider,
+            EAPStackBuilder.TargetAddressSetter, ByteBufferReceiver {
         RadiusPacket getRequestPacket();
         void setRequestPacket(RadiusPacket packet);
     }
@@ -80,7 +81,7 @@ public class SSLEngineSocketLessHandshake {
 
         private BlockingQueue<Pair<ByteBuffer,RadiusPacket>> byteBufferBlockingQueue;
 
-        private RadiusRequestPacketProvider radiusRequestPacketProvider;
+        private RadiusRequestInfoProvider radiusRequestInfoProvider;
 
         public MemQueuePipe() {
             byteBufferBlockingQueue = new ArrayBlockingQueue<>(50);
@@ -89,8 +90,8 @@ public class SSLEngineSocketLessHandshake {
         public ByteBuffer read() {
             try {
                 Pair<ByteBuffer, RadiusPacket> packetPair = byteBufferBlockingQueue.take();
-                if (radiusRequestPacketProvider != null) {
-                    radiusRequestPacketProvider.setRequestPacket(packetPair.snd);
+                if (radiusRequestInfoProvider != null) {
+                    radiusRequestInfoProvider.setRequestPacket(packetPair.snd);
                 }
 
                 ByteBuffer buffer = packetPair.fst;
@@ -117,8 +118,8 @@ public class SSLEngineSocketLessHandshake {
             return clone;
         }
 
-        void setRadiusRequestPacketProvider(RadiusRequestPacketProvider rrpp) {
-            radiusRequestPacketProvider = rrpp;
+        void setRadiusRequestInfoProvider(RadiusRequestInfoProvider rrpp) {
+            radiusRequestInfoProvider = rrpp;
         }
     }
 

@@ -9,6 +9,9 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.DatagramPacket;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -19,20 +22,27 @@ import java.util.Arrays;
 public class RadiusPacketSink implements DatagramPacketSink {
     private String radiusStateValue;
     private DatagramPacketSink lowerLevelSink;
-    private SSLEngineSocketLessHandshake.RadiusRequestPacketProvider radiusRequestPacketProvider;
+    private SSLEngineSocketLessHandshake.RadiusRequestInfoProvider radiusRequestInfoProvider;
     private String shareSecret;
+    private AppProtocolContext appProtocolContext;
 
     private static final int MAX_ATTR_LEN = 253;
     private static final int RADIUS_ACCESS_CHALLENGE = 11;
+    private static final int RADIUS_ACCESS_ACCEPT = 2;
 
     public static final int EAP_MESSAGE_ATTR = 79;
     public static final int RADIUS_STATE_ATTR = 24;
     public static final int MESSAGE_AUTHENTICATOR_ATTR = 80;
 
-    public static class RadiusRequestPacketProviderImpl implements SSLEngineSocketLessHandshake.RadiusRequestPacketProvider {
+    public static class RadiusRequestInfoProviderImpl implements SSLEngineSocketLessHandshake.RadiusRequestInfoProvider,
+            EAPStackBuilder.TargetAddressSetter, ByteBufferReceiver {
         private RadiusPacket radiusPacket;
 
-        public RadiusRequestPacketProviderImpl(RadiusPacket startingRadiusPacket) {
+        private InetSocketAddress targetAddress;
+
+        private ByteBufferReceiver chainedReceiver;
+
+        public RadiusRequestInfoProviderImpl(RadiusPacket startingRadiusPacket) {
             radiusPacket = startingRadiusPacket;
         }
 
@@ -45,22 +55,59 @@ public class RadiusPacketSink implements DatagramPacketSink {
         public void setRequestPacket(RadiusPacket packet) {
             radiusPacket = packet;
         }
+
+
+        @Override
+        public InetAddress getTargetIP() {
+            checkTargetAddress();
+            return targetAddress.getAddress();
+        }
+
+        @Override
+        public int getTargetPort() {
+            checkTargetAddress();
+            return targetAddress.getPort();
+        }
+
+        @Override
+        public void setTargetAddress(InetSocketAddress address) {
+            targetAddress = address;
+        }
+
+        @Override
+        public void receive(ByteBuffer byteBuffer) {
+            if (chainedReceiver != null) {
+                this.chainedReceiver.receive(byteBuffer);
+            }
+        }
+
+        public ByteBufferReceiver chain(ByteBufferReceiver chainedReceiver) {
+            this.chainedReceiver = chainedReceiver;
+            return chainedReceiver;
+        }
+
+        private void checkTargetAddress() {
+            if (targetAddress == null) {
+                throw new RuntimeException("Target address is not set");
+            }
+        }
     }
 
-    public RadiusPacketSink(String radiusState, SSLEngineSocketLessHandshake.RadiusRequestPacketProvider rrpp, String sharedSecret,
-                            DatagramPacketSink lowerSink) {
+    public RadiusPacketSink(String radiusState, SSLEngineSocketLessHandshake.RadiusRequestInfoProvider rrpp, String sharedSecret,
+                            DatagramPacketSink lowerSink, AppProtocolContext appProtocolContext) {
         this.radiusStateValue = radiusState;
         this.lowerLevelSink = lowerSink;
-        this.radiusRequestPacketProvider = rrpp;
+        this.radiusRequestInfoProvider = rrpp;
         this.shareSecret = sharedSecret;
+        this.appProtocolContext = appProtocolContext;
     }
 
     @Override
     public void send(DatagramPacket packet) throws IOException {
         MACAdaptedRadiusPacket radiusPacket = new MACAdaptedRadiusPacket();
-        radiusPacket.setPacketType(RADIUS_ACCESS_CHALLENGE);
+        radiusPacket.setPacketType(appProtocolContext.getRadiusAccept() ? RADIUS_ACCESS_ACCEPT : RADIUS_ACCESS_CHALLENGE);
 
-        RadiusPacket radiusRequest = radiusRequestPacketProvider.getRequestPacket();
+        RadiusPacket radiusRequest = radiusRequestInfoProvider.getRequestPacket();
         radiusPacket.setPacketIdentifier(radiusRequest.getPacketIdentifier());
 
         for(int offset = 0; addEAPAttr(EAP_MESSAGE_ATTR, packet, offset, radiusPacket); offset += MAX_ATTR_LEN) {
@@ -83,9 +130,9 @@ public class RadiusPacketSink implements DatagramPacketSink {
         StreamUtils.DataCollector bos = new StreamUtils.DataCollector(4096);
         radiusPacket.encodeResponsePacket(bos, this.shareSecret, radiusRequest);
 
-        DatagramPacket wrapper = new DatagramPacket(bos.getBytes(), 0, bos.getCount(), packet.getSocketAddress());
+        DatagramPacket wrapped = new DatagramPacket(bos.getBytes(), 0, bos.getCount(), packet.getSocketAddress());
 
-        lowerLevelSink.send(wrapper);
+        lowerLevelSink.send(wrapped);
         System.out.println("###### Sending RADIUS packet out with id = " + radiusPacket.getPacketIdentifier()
                 + " size = " + packet.getLength());
     }
