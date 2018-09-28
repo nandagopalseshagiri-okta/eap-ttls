@@ -16,4 +16,11 @@ public interface AppProtocolContext {
     void setRadiusAccept(boolean radiusAccept);
     void setEapSuccess(boolean eapSuccess);
     boolean getRadiusAccept();
+    default RadiusResponseModulator getRadiusResponseModulator() {
+        return null;
+    }
+    default void setRadiusResponseModulator(RadiusResponseModulator radiusResponseModulator) {
+    }
+    default void enableRadiusResponseModulation(boolean enable) {
+    }
 }

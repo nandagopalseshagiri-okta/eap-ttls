@@ -454,6 +454,16 @@ public class SSLEngineSocketLessHandshake {
             System.out.println("Server read data length = " + bb.remaining());
             eapttls.receive(bb);
         }
+
+        try {
+            Thread.sleep(1000);
+        } catch (Exception e) {
+        }
+
+        System.out.println("Generating keying material...");
+        byte[] ttlsKey = EAPOrchestrator.generateKeyingMaterial(serverEngine, tlsTransceiver.releaseHandShaker());
+
+        System.out.println("Generated keying material of length = " + (ttlsKey != null ? ttlsKey.length : "null"));
     }
 
     private void performSocketLessSSL() throws Exception {

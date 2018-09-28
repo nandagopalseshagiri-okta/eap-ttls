@@ -120,6 +120,10 @@ public class RadiusPacketSink implements DatagramPacketSink {
         RadiusAttribute macAttr = new RadiusAttribute(MESSAGE_AUTHENTICATOR_ATTR, new byte[16]);
         radiusPacket.addAttribute(macAttr);
 
+        if (appProtocolContext.getRadiusResponseModulator() != null) {
+            appProtocolContext.getRadiusResponseModulator().modulateResponse(radiusRequest, radiusPacket);
+        }
+
         HmacMD5OutputStream hmacMD5OutputStream = new HmacMD5OutputStream(this.shareSecret);
         radiusPacket.encodeResponsePacket(hmacMD5OutputStream, this.shareSecret, radiusRequest);
 

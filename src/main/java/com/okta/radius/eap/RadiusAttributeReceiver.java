@@ -12,11 +12,15 @@ import java.nio.ByteBuffer;
  */
 public class RadiusAttributeReceiver implements ByteBufferReceiver {
     private  AppProtocolContext appProtocolContext;
+
+    private EAPTTLSTransceiver eapttlsTransceiver;
+
     private String username;
     private String password;
 
-    public RadiusAttributeReceiver(AppProtocolContext context) {
+    public RadiusAttributeReceiver(AppProtocolContext context, EAPTTLSTransceiver transmitter) {
         appProtocolContext = context;
+        eapttlsTransceiver = transmitter;
     }
 
     @Override
@@ -97,6 +101,13 @@ public class RadiusAttributeReceiver implements ByteBufferReceiver {
             System.out.printf("Recevied both username=%s and password=%s - marking success\n", username, password);
             appProtocolContext.setRadiusAccept(true);
             appProtocolContext.setEapSuccess(true);
+            appProtocolContext.enableRadiusResponseModulation(true);
+
+            eapttlsTransceiver.transmitEmptyEAPPacket();
+
+            appProtocolContext.enableRadiusResponseModulation(false);
+            appProtocolContext.setEapSuccess(false);
+            appProtocolContext.setRadiusAccept(false);
         }
     }
 }

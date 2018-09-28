@@ -19,6 +19,9 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
     private boolean radiusAccept = false;
     private boolean eapSuccess = false;
 
+    private RadiusResponseModulator radiusResponseModulator;
+    private boolean responseModulationEnabled = false;
+
     public TargetBoundAppProtocolContext(int mtu, String name, boolean isServerMode) {
         this.mtu = mtu;
         this.name = name;
@@ -108,5 +111,20 @@ public class TargetBoundAppProtocolContext implements AppProtocolContext {
     @Override
     public boolean getRadiusAccept() {
         return radiusAccept;
+    }
+
+    @Override
+    public RadiusResponseModulator getRadiusResponseModulator() {
+        return responseModulationEnabled ? radiusResponseModulator : null;
+    }
+
+    @Override
+    public void setRadiusResponseModulator(RadiusResponseModulator radiusResponseModulator) {
+        this.radiusResponseModulator = radiusResponseModulator;
+    }
+
+    @Override
+    public void enableRadiusResponseModulation(boolean enable) {
+        responseModulationEnabled = enable;
     }
 }

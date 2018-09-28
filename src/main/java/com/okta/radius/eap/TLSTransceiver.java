@@ -3,6 +3,7 @@ package com.okta.radius.eap;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLSession;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 
 import static com.okta.radius.eap.SSLEngineSocketLessHandshake.SSLByteBufferIOStream.expand;
@@ -17,6 +18,8 @@ public class TLSTransceiver implements ByteBufferReceiver, ByteBufferTransmitter
     private static final int MAX_BUFFER_LIMIT = 16 * 1024 * 1024;
     private boolean sslHandShakeDone = false;
     private SSLEngine sslEngine;
+
+    private Object handShaker;
 
     private int netBufferMax = 4096;
     private int appBufferMax = 4096;
@@ -45,6 +48,10 @@ public class TLSTransceiver implements ByteBufferReceiver, ByteBufferTransmitter
         this.chainedReceiver = chainedReceiver;
     }
 
+    public SSLEngine getSslEngine() {
+        return sslEngine;
+    }
+
     public ByteBufferReceiver chain(ByteBufferReceiver chainedReceiver) {
         this.chainedReceiver = chainedReceiver;
         return chainedReceiver;
@@ -55,11 +62,32 @@ public class TLSTransceiver implements ByteBufferReceiver, ByteBufferTransmitter
         return chainedTransmitter;
     }
 
+    private void storeSSLHandshakerRef() {
+        if (handShaker != null) {
+            return;
+        }
+        try {
+            Class sslEngineImpl = sslEngine.getClass();
+            Field hsField = sslEngineImpl.getDeclaredField("handshaker");
+            hsField.setAccessible(true);
+
+            handShaker = hsField.get(sslEngine);
+        } catch (Exception e) {
+        }
+    }
+
+    public Object releaseHandShaker() {
+        Object t = handShaker;
+        handShaker = null;
+        return t;
+    }
+
     @Override
     public void receive(ByteBuffer byteBuffer) {
         checkState();
         try {
             ByteBuffer appData = unwrap(byteBuffer);
+            storeSSLHandshakerRef();
             if (appData != null) {
                 appData.flip();
                 if (appData.limit() > 0 && chainedReceiver != null) {

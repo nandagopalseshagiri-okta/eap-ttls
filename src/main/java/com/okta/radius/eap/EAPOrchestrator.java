@@ -1,16 +1,26 @@
 package com.okta.radius.eap;
 
+import com.google.common.base.Charsets;
+import org.tinyradius.attribute.RadiusAttribute;
+import org.tinyradius.attribute.VendorSpecificAttribute;
 import org.tinyradius.packet.RadiusPacket;
 
 import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLSession;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Arrays;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -19,6 +29,105 @@ import java.util.concurrent.ThreadPoolExecutor;
  * Created by nandagopal.seshagiri on 8/28/18.
  */
 public class EAPOrchestrator implements EAPMessageHandler {
+
+    static byte[] generateKeyingMaterial(SSLEngine sslEngine, Object handShaker) {
+        try {
+            Class handShakerClass = handShaker.getClass().getSuperclass();
+
+            Field clientRandomField = handShakerClass.getDeclaredField("clnt_random");
+            clientRandomField.setAccessible(true);
+
+            Field serverRandomField = handShakerClass.getDeclaredField("svr_random");
+            serverRandomField.setAccessible(true);
+
+            Object clientRandom = clientRandomField.get(handShaker);
+            Object serverRandom = serverRandomField.get(handShaker);
+
+            SSLSession session = sslEngine.getSession();
+            Field masterSecretField = session.getClass().getDeclaredField("masterSecret");
+            masterSecretField.setAccessible(true);
+
+            Object masterSecret = masterSecretField.get(session);
+            Field keyField = masterSecret.getClass().getDeclaredField("key");
+            keyField.setAccessible(true);
+
+            Object keyBytes = keyField.get(masterSecret);
+
+            Field randomBytesField = clientRandom.getClass().getDeclaredField("random_bytes");
+            randomBytesField.setAccessible(true);
+
+            byte[] clientRandBytes = (byte[]) randomBytesField.get(clientRandom);
+            byte[] serverRandBytes = (byte[]) randomBytesField.get(serverRandom);
+
+            Class tlsPRFGenerator = Class.forName("com.sun.crypto.provider.TlsPrfGenerator");
+            Method tls10PRF = tlsPRFGenerator.getDeclaredMethod("doTLS10PRF", new Class[] {byte[].class, byte[].class, byte[].class, int.class});
+            tls10PRF.setAccessible(true);
+
+            return (byte[]) tls10PRF.invoke(null, keyBytes, "ttls keying material".getBytes(Charsets.UTF_8),
+                    concat(clientRandBytes, serverRandBytes), new Integer(128));
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new RuntimeException("Cannot get keying material from TLS session", e);
+        }
+    }
+
+    private static byte[] packAsMSMPPEKey(byte[] key, int offset, int length, byte[] sharedSecret,
+                                          byte[] requestAuthenticator) {
+        byte[] zeros = new byte[15];
+        StreamUtils.DataCollector bos = new StreamUtils.DataCollector(2 * length);
+        bos.write(length);
+        bos.write(key, offset, length);
+
+        int paddingLen = 16 - (length + 1) % 16;
+        bos.write(zeros, 0, paddingLen);
+
+        byte[] salt = new byte[2];
+        new SecureRandom().nextBytes(salt);
+
+        byte[] c = concat(requestAuthenticator, salt);
+
+        MessageDigest md5 = getMd5OrThrow();
+
+        for (int i = 0; i < bos.getBytes().length; i += 16) {
+            md5.update(sharedSecret);
+            md5.update(c);
+            byte[] b = md5.digest();
+            md5.reset();
+            xor(bos.getBytes(), i, 16, b);
+            c = Arrays.copyOfRange(bos.getBytes(), i, i + 16);
+        }
+
+        StreamUtils.DataCollector result = new StreamUtils.DataCollector(bos.size() + 2);
+        result.write(salt, 0, salt.length);
+        result.write(bos.getBytes(), 0, bos.size());
+
+        return result.getBytes();
+    }
+
+    private static void xor(byte[] leftAndDest, int leftOffset, int leftLen, byte[] right) {
+        if (leftLen != right.length) {
+            throw new IllegalArgumentException("leftLen and right.length does not match");
+        }
+
+        for (int i = 0; i < leftLen; ++i) {
+            leftAndDest[leftOffset + i] = (byte) (leftAndDest[leftOffset + i] ^ right[i]);
+        }
+    }
+
+    private static MessageDigest getMd5OrThrow() {
+        try {
+            return MessageDigest.getInstance("MD5");
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("MD5 algorithm could not be found", e);
+        }
+    }
+
+    private static byte[] concat(byte[] a, byte[] b) {
+        byte[] c = new byte[a.length + b.length];
+        System.arraycopy(a, 0, c, 0, a.length);
+        System.arraycopy(b, 0, c, a.length, b.length);
+        return c;
+    }
 
     public static class TragetNotBoundException extends RuntimeException {
     }
@@ -127,9 +236,12 @@ public class EAPOrchestrator implements EAPMessageHandler {
         rrpp.setRequestPacket(radiusRequest);
         rrpp.setTargetAddress(fromAddress);
 
-        RadiusAttributeReceiver radiusAttributeReceiver = new RadiusAttributeReceiver(contextServer);
+        RadiusAttributeReceiver radiusAttributeReceiver = new RadiusAttributeReceiver(contextServer, eapttlsTransceiver);
 
         tlsTransceiver.chain(radiusAttributeReceiver);
+
+        RadiusResponseModulatorImpl radiusResponseModulator = new RadiusResponseModulatorImpl(tlsTransceiver, shareSecret);
+        contextServer.setRadiusResponseModulator(radiusResponseModulator);
 
         contextServer.setStartFlag();
         // not writing any data - just EAP TTLS packet indicating start of TTLS
@@ -182,6 +294,46 @@ public class EAPOrchestrator implements EAPMessageHandler {
             }
         } catch (Exception e) {
             System.out.println("Caught exception in eapPacketProcessingThread e=" + e);
+        }
+    }
+
+    private static class RadiusResponseModulatorImpl implements RadiusResponseModulator {
+
+        public RadiusResponseModulatorImpl(TLSTransceiver tlsTransceiver, String shareSecret) {
+            this.tlsTransceiver = tlsTransceiver;
+            this.sharedSecret = shareSecret;
+        }
+
+        private TLSTransceiver tlsTransceiver;
+
+        private String sharedSecret;
+
+        private static final int MICROSOFT_VENDOR_ID = 311;
+        // define in last line of 1st page of - https://tools.ietf.org/html/rfc2548
+
+        private static final int MS_MPPR_SEND_KEY = 16;
+        private static final int MS_MPPR_RECV_KEY = 17;
+
+        @Override
+        public void modulateResponse(RadiusPacket request, RadiusPacket response) {
+            byte[] keyMaterial = generateKeyingMaterial(tlsTransceiver.getSslEngine(), tlsTransceiver.releaseHandShaker());
+
+            byte[] ss = sharedSecret.getBytes(Charsets.UTF_8);
+
+            byte[] mppeRecvKey = packAsMSMPPEKey(keyMaterial, 0, 32, ss, request.getAuthenticator());
+            byte[] mppeSendKey = packAsMSMPPEKey(keyMaterial, 32, 64, ss, request.getAuthenticator());
+
+            VendorSpecificAttribute vsa = new VendorSpecificAttribute(MICROSOFT_VENDOR_ID);
+            vsa.addSubAttribute(newVendorSubAttr(MS_MPPR_RECV_KEY, mppeRecvKey));
+            vsa.addSubAttribute(newVendorSubAttr(MS_MPPR_SEND_KEY, mppeSendKey));
+
+            response.addAttribute(vsa);
+        }
+
+        private  RadiusAttribute newVendorSubAttr(int type, byte[] data) {
+            RadiusAttribute ra = new RadiusAttribute(type, data);
+            ra.setVendorId(MICROSOFT_VENDOR_ID);
+            return ra;
         }
     }
 }
